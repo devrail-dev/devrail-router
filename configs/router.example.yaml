@@ -1,0 +1,23 @@
+server:
+  address: 127.0.0.1:8080
+
+models:
+  - id: local-coder
+    name: Local Coder
+    backend: lmstudio
+    target_model: qwen3-coder-30b-a3b-instruct
+    context_window: 65536
+    max_output_tokens: 4096
+    tool_calls: true
+  - id: local-coder-large
+    name: Local Coder Large
+    backend: lmstudio
+    target_model: qwen/qwen3.6-35b-a3b
+    context_window: 131072
+    max_output_tokens: 4096
+    tool_calls: true
+
+backends:
+  - id: lmstudio
+    type: openai-compatible
+    base_url: http://127.0.0.1:1234/v1
