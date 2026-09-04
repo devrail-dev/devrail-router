@@ -1,0 +1,22 @@
+[Unit]
+Description=DevRail Router local-first LLM gateway
+Documentation=https://github.com/devrail-dev/devrail-router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=devrail-router
+Group=devrail-router
+ExecStart=/usr/local/bin/devrail-router serve -config /etc/devrail/router.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/devrail-router
+ReadOnlyPaths=/etc/devrail
+
+[Install]
+WantedBy=multi-user.target
