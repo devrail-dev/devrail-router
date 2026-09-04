@@ -78,6 +78,7 @@ override.tf.json
 
 # --- DevRail ---
 .devrail-output/
+bin/
 
 # --- Secrets ---
 .env

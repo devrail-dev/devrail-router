@@ -15,6 +15,51 @@ The primary Linux installation target is:
 
 The systemd unit lives at `packaging/systemd/devrail-router.service`.
 
+Build a tarball for the current platform:
+
+```sh
+make package
+```
+
+Build a Linux AMD64 tarball and run package smoke checks:
+
+```sh
+make package-smoke GOOS=linux GOARCH=amd64
+```
+
+The generated archive is written to `dist/` with this layout:
+
+```text
+devrail-router_<version>_<os>_<arch>/
+  devrail-router
+  configs/router.example.yaml
+  packaging/linux/install.sh
+  packaging/systemd/devrail-router.service
+  docs/
+  README.md
+  CHANGELOG.md
+  LICENSE
+```
+
+Install from an unpacked tarball:
+
+```sh
+sudo ./packaging/linux/install.sh
+```
+
+The installer creates the `devrail-router` service user and group when missing,
+installs the binary, installs a default config only if `/etc/devrail/router.yaml`
+does not already exist, installs the systemd unit, reloads systemd, and enables
+the service. It does not start the service unless `START_SERVICE=1` is set.
+
+Useful installer flags:
+
+```sh
+DRY_RUN=1 ./packaging/linux/install.sh
+FORCE_CONFIG=1 sudo ./packaging/linux/install.sh
+START_SERVICE=1 sudo ./packaging/linux/install.sh
+```
+
 ## Container Image
 
 A container image is useful for proxy-only deployments and CI smoke tests. It is

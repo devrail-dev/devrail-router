@@ -11,6 +11,7 @@ Group=devrail-router
 ExecStart=/usr/local/bin/devrail-router serve -config /etc/devrail/router.yaml
 Restart=on-failure
 RestartSec=5s
+StateDirectory=devrail-router
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
