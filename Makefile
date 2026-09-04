@@ -18,6 +18,12 @@
 DEVRAIL_IMAGE     ?= ghcr.io/devrail-dev/dev-toolchain:v1
 DEVRAIL_FAIL_FAST ?= 0
 DEVRAIL_LOG_FORMAT ?= json
+VERSION           ?= 0.1.0-dev
+GOOS              ?= $(shell go env GOOS 2>/dev/null || echo linux)
+GOARCH            ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
+DIST_DIR          ?= dist
+BIN_DIR           ?= bin
+PACKAGE_NAME      := devrail-router_$(VERSION)_$(GOOS)_$(GOARCH)
 
 DOCKER_RUN := docker run --rm \
 	-v "$$(pwd):/workspace" \
@@ -45,7 +51,7 @@ HAS_RUST       := $(filter rust,$(LANGUAGES))
 # ---------------------------------------------------------------------------
 # .PHONY declarations
 # ---------------------------------------------------------------------------
-.PHONY: help lint format fix test security scan docs changelog check install-hooks init
+.PHONY: help build clean lint format fix package package-smoke test security scan docs changelog check install-hooks init
 .PHONY: _lint _format _fix _test _security _scan _docs _changelog _check _check-config _init
 
 # ===========================================================================
@@ -58,11 +64,22 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
+build: ## Build the devrail-router binary for GOOS/GOARCH
+	@mkdir -p "$(BIN_DIR)"
+	CGO_ENABLED=0 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build \
+		-trimpath \
+		-ldflags "-s -w -X main.version=$(VERSION)" \
+		-o "$(BIN_DIR)/devrail-router" \
+		./cmd/devrail-router
+
 changelog: ## Generate CHANGELOG.md from conventional commits
 	$(DOCKER_RUN) make _changelog
 
 check: ## Run all checks (lint, format, test, security, scan, docs)
 	$(DOCKER_RUN) make _check
+
+clean: ## Remove build and package outputs
+	rm -rf "$(BIN_DIR)" "$(DIST_DIR)"
 
 docs: ## Generate documentation
 	$(DOCKER_RUN) make _docs
@@ -100,6 +117,39 @@ install-hooks: ## Install pre-commit hooks
 
 lint: ## Run all linters
 	$(DOCKER_RUN) make _lint
+
+package: build ## Build a Linux/macOS tarball package
+	@rm -rf "$(DIST_DIR)/$(PACKAGE_NAME)"
+	@mkdir -p "$(DIST_DIR)/$(PACKAGE_NAME)"
+	cp "$(BIN_DIR)/devrail-router" "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router"
+	cp LICENSE README.md CHANGELOG.md "$(DIST_DIR)/$(PACKAGE_NAME)/"
+	mkdir -p "$(DIST_DIR)/$(PACKAGE_NAME)/configs" \
+		"$(DIST_DIR)/$(PACKAGE_NAME)/docs" \
+		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/systemd" \
+		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux"
+	cp configs/router.example.yaml "$(DIST_DIR)/$(PACKAGE_NAME)/configs/"
+	cp docs/architecture.md docs/packaging.md "$(DIST_DIR)/$(PACKAGE_NAME)/docs/"
+	cp packaging/systemd/devrail-router.service "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/systemd/"
+	cp packaging/linux/install.sh "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux/"
+	chmod 0755 "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router" \
+		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux/install.sh"
+	(cd "$(DIST_DIR)" && tar -czf "$(PACKAGE_NAME).tar.gz" "$(PACKAGE_NAME)")
+
+package-smoke: package ## Build and smoke-test the tarball package
+	@set -e; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	tar -xzf "$(DIST_DIR)/$(PACKAGE_NAME).tar.gz" -C "$$tmp_dir"; \
+	host_goos=$$(go env GOHOSTOS); \
+	host_goarch=$$(go env GOHOSTARCH); \
+	if [ "$(GOOS)" = "$$host_goos" ] && [ "$(GOARCH)" = "$$host_goarch" ]; then \
+		"$$tmp_dir/$(PACKAGE_NAME)/devrail-router" version; \
+		"$$tmp_dir/$(PACKAGE_NAME)/devrail-router" check -config "$$tmp_dir/$(PACKAGE_NAME)/configs/router.example.yaml"; \
+	else \
+		echo "skipping binary execution for cross-built package $(GOOS)/$(GOARCH) on $$host_goos/$$host_goarch"; \
+	fi; \
+	bash -n "$$tmp_dir/$(PACKAGE_NAME)/packaging/linux/install.sh"; \
+	test -f "$$tmp_dir/$(PACKAGE_NAME)/packaging/systemd/devrail-router.service"
 
 scan: ## Run universal scanners (trivy, gitleaks)
 	$(DOCKER_RUN) make _scan

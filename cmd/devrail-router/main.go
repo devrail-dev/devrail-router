@@ -15,7 +15,7 @@ import (
 	"github.com/devrail-dev/devrail-router/internal/server"
 )
 
-const version = "0.1.0-dev"
+var version = "0.1.0-dev"
 
 func main() {
 	os.Exit(run(os.Args[1:]))

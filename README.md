@@ -23,7 +23,8 @@ This repository is in early foundation work. The current service supports:
 - OpenAI-compatible `/v1/*` request proxying
 - model alias rewriting
 - YAML configuration
-- Linux/systemd packaging notes
+- Linux tarball packaging
+- Linux/systemd install script and unit
 
 Routing policy, auth, telemetry, LM Studio lifecycle integration, and Omarchy
 integration are planned next.
@@ -60,6 +61,15 @@ curl http://127.0.0.1:8080/v1/chat/completions \
     "max_tokens": 32
   }'
 ```
+
+Build and smoke-test an installable Linux package:
+
+```sh
+make package-smoke GOOS=linux GOARCH=amd64
+```
+
+The package is written to `dist/` and includes the binary, example config,
+systemd unit, and Linux installer.
 
 ## Configuration
 

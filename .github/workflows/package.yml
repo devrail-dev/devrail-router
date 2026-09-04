@@ -1,0 +1,24 @@
+# Package workflow builds and smoke-tests the installable tarball.
+name: Package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Smoke-test package
+        run: make package-smoke GOOS=linux GOARCH=amd64
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: devrail-router-linux-amd64
+          path: dist/*.tar.gz
