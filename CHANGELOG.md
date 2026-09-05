@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Roadmap for maturing DevRail Router from a single-backend gateway into an
   observable local inference control plane.
 - Request IDs are now added to router responses and structured logs.
+- Streaming backend responses now log first event latency and usage tokens when
+  the backend sends OpenAI-compatible streamed usage chunks.
 
 ### Changed
 

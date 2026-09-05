@@ -455,6 +455,58 @@ func TestBackendResponseTelemetryLogsUsage(t *testing.T) {
 	}
 }
 
+func TestStreamingBackendTelemetryLogsUsage(t *testing.T) {
+	var logs bytes.Buffer
+	originalLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(originalLogger)
+	})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"model\":\"target-model\",\"choices\":[{\"delta\":{\"content\":\"o\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"model\":\"target-model\",\"choices\":[{\"delta\":{\"content\":\"k\"}}],\"usage\":{\"prompt_tokens\":27,\"completion_tokens\":2,\"total_tokens\":29}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder","messages":[],"stream":true}`),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Fatalf("stream body was not proxied: %s", rec.Body.String())
+	}
+
+	logText := logs.String()
+	for _, want := range []string{
+		`"msg":"backend response completed"`,
+		`"streaming":true`,
+		`"first_event_ms":`,
+		`"upstream_model":"target-model"`,
+		`"prompt_tokens":27`,
+		`"completion_tokens":2`,
+		`"total_tokens":29`,
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected log to contain %s, got logs:\n%s", want, logText)
+		}
+	}
+}
+
 func TestBackendProxyErrorReturnsOpenAIError(t *testing.T) {
 	t.Parallel()
 
