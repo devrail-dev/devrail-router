@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Request IDs are now added to router responses and structured logs.
 - Streaming backend responses now log first event latency and usage tokens when
   the backend sends OpenAI-compatible streamed usage chunks.
+- `/metrics` now exposes Prometheus-compatible request, queue, latency, byte,
+  and token telemetry.
 
 ### Changed
 

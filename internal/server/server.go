@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,7 @@ type Server struct {
 	cfg         config.Config
 	limiters    map[string]*modelLimiter
 	ensureLocks map[string]*sync.Mutex
+	metrics     *metricsRegistry
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -51,13 +54,15 @@ func New(cfg config.Config) (*Server, error) {
 		}
 	}
 
-	return &Server{cfg: cfg, limiters: limiters, ensureLocks: ensureLocks}, nil
+	return &Server{cfg: cfg, limiters: limiters, ensureLocks: ensureLocks, metrics: newMetricsRegistry()}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/healthz":
 		s.handleHealth(w, r)
+	case r.URL.Path == "/metrics":
+		s.handleMetrics(w, r)
 	case r.URL.Path == "/v1/models":
 		s.handleModels(w, r)
 	case strings.HasPrefix(r.URL.Path, "/v1/"):
@@ -65,6 +70,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = io.WriteString(w, s.metrics.render())
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -106,22 +116,25 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	modelID, body, err := requestModel(r)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
+		s.metrics.record(requestMetrics{Alias: modelID, Status: http.StatusBadRequest, Started: time.Now()})
 		return
 	}
 
 	model, ok := s.cfg.Model(modelID)
 	if !ok {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("unknown model alias %q", modelID), "invalid_request_error", "unknown_model_alias")
+		s.metrics.record(requestMetrics{Alias: modelID, Status: http.StatusBadRequest, Started: time.Now()})
 		return
 	}
 
 	backend, ok := s.cfg.Backend(model.Backend)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, fmt.Sprintf("unknown backend %q", model.Backend), "devrail_config_error", "unknown_backend")
+		s.metrics.record(requestMetricsFromModel(model, config.BackendConfig{}, http.StatusInternalServerError, time.Now()))
 		return
 	}
 
-	release, ok := s.acquireModelSlot(w, r, model, requestID)
+	waited, release, ok := s.acquireModelSlot(w, r, model, backend, requestID)
 	if !ok {
 		return
 	}
@@ -130,12 +143,14 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.ensureModelReady(w, r, model, requestID) {
+		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusServiceUnavailable, time.Now()))
 		return
 	}
 
 	body, err = rewriteModel(body, model.TargetModel)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
+		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusBadRequest, time.Now()))
 		return
 	}
 
@@ -146,6 +161,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	target, err := url.Parse(backend.BaseURL)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "backend base_url is invalid", "devrail_config_error", "invalid_backend_base_url")
+		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusInternalServerError, time.Now()))
 		return
 	}
 
@@ -159,7 +175,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		setBackendAuth(req, backend)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		instrumentBackendResponse(resp, started, model, backend, requestID)
+		instrumentBackendResponse(resp, started, waited, model, backend, requestID, s.metrics)
 		return nil
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -174,6 +190,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 			"duration_ms", time.Since(started).Milliseconds(),
 			"error", proxyErr,
 		)
+		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusBadGateway, started))
 		writeOpenAIError(rw, http.StatusBadGateway, "backend request failed", "devrail_backend_error", "backend_request_failed")
 	}
 
@@ -181,10 +198,10 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig, requestID string) (func(), bool) {
+func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig, backend config.BackendConfig, requestID string) (time.Duration, func(), bool) {
 	limiter, ok := s.limiters[model.ID]
 	if !ok {
-		return nil, true
+		return 0, nil, true
 	}
 
 	waited, snapshot, release, err := limiter.acquire(r.Context())
@@ -198,13 +215,16 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 			"queued", snapshot.queued,
 			"wait_ms", waited.Milliseconds(),
 		)
-		return release, true
+		return waited, release, true
 	}
 
+	status := http.StatusRequestTimeout
 	switch {
 	case errors.Is(err, errQueueFull):
+		status = http.StatusTooManyRequests
 		writeOpenAIError(w, http.StatusTooManyRequests, "model queue is full", "devrail_queue_full", "queue_full")
 	case errors.Is(err, errQueueTimeout):
+		status = http.StatusServiceUnavailable
 		writeOpenAIError(w, http.StatusServiceUnavailable, "timed out waiting for model queue", "devrail_queue_timeout", "queue_timeout")
 	default:
 		writeOpenAIError(w, http.StatusRequestTimeout, "request canceled while waiting for model queue", "devrail_queue_canceled", "queue_canceled")
@@ -219,7 +239,10 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 		"wait_ms", waited.Milliseconds(),
 		"error", err,
 	)
-	return nil, false
+	metrics := requestMetricsFromModel(model, backend, status, time.Now())
+	metrics.QueueWait = waited
+	s.metrics.record(metrics)
+	return waited, nil, false
 }
 
 func (s *Server) ensureModelReady(w http.ResponseWriter, r *http.Request, model config.ModelConfig, requestID string) bool {
@@ -305,7 +328,9 @@ type responseTelemetry struct {
 	CompletionTokens int
 	TotalTokens      int
 	Bytes            int64
+	QueueWait        time.Duration
 	Started          time.Time
+	metrics          *metricsRegistry
 }
 
 type telemetryReadCloser struct {
@@ -411,6 +436,20 @@ func (body *streamTelemetryReadCloser) log() {
 }
 
 func logTelemetry(telemetry *responseTelemetry) {
+	telemetry.metrics.record(requestMetrics{
+		Alias:            telemetry.Alias,
+		TargetModel:      telemetry.TargetModel,
+		Backend:          telemetry.Backend,
+		Status:           telemetry.Status,
+		Streaming:        telemetry.Streaming,
+		FirstEvent:       telemetry.FirstEvent,
+		PromptTokens:     telemetry.PromptTokens,
+		CompletionTokens: telemetry.CompletionTokens,
+		TotalTokens:      telemetry.TotalTokens,
+		Bytes:            telemetry.Bytes,
+		QueueWait:        telemetry.QueueWait,
+		Started:          telemetry.Started,
+	})
 	slog.Info(
 		"backend response completed",
 		"request_id", telemetry.RequestID,
@@ -429,8 +468,17 @@ func logTelemetry(telemetry *responseTelemetry) {
 	)
 }
 
-func instrumentBackendResponse(resp *http.Response, started time.Time, model config.ModelConfig, backend config.BackendConfig, requestID string) {
+func instrumentBackendResponse(
+	resp *http.Response,
+	started time.Time,
+	queueWait time.Duration,
+	model config.ModelConfig,
+	backend config.BackendConfig,
+	requestID string,
+	metrics *metricsRegistry,
+) {
 	if resp.Body == nil {
+		metrics.record(requestMetricsFromModel(model, backend, resp.StatusCode, started))
 		return
 	}
 
@@ -441,6 +489,8 @@ func instrumentBackendResponse(resp *http.Response, started time.Time, model con
 		Backend:     backend.ID,
 		Status:      resp.StatusCode,
 		Started:     started,
+		QueueWait:   queueWait,
+		metrics:     metrics,
 	}
 
 	if isEventStreamResponse(resp) {
@@ -498,6 +548,280 @@ func applyOpenAIUsageTelemetry(raw []byte, telemetry *responseTelemetry) {
 	telemetry.PromptTokens = payload.Usage.PromptTokens
 	telemetry.CompletionTokens = payload.Usage.CompletionTokens
 	telemetry.TotalTokens = payload.Usage.TotalTokens
+}
+
+type requestMetrics struct {
+	Alias            string
+	TargetModel      string
+	Backend          string
+	Status           int
+	Streaming        bool
+	FirstEvent       time.Time
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Bytes            int64
+	QueueWait        time.Duration
+	Started          time.Time
+}
+
+type metricsRegistry struct {
+	mu                sync.Mutex
+	requests          map[string]*metricSeries
+	durationSeconds   histogram
+	queueWaitSeconds  histogram
+	firstEventSeconds histogram
+	responseBytes     float64
+	promptTokens      float64
+	completionTokens  float64
+	totalTokens       float64
+}
+
+type metricSeries struct {
+	Labels metricLabels
+	Value  float64
+}
+
+type metricLabels struct {
+	Alias       string
+	Backend     string
+	TargetModel string
+	Status      string
+	Streaming   string
+	Le          string
+}
+
+type histogram struct {
+	Buckets []float64
+	Series  map[string]*histogramSeries
+}
+
+type histogramSeries struct {
+	Labels  metricLabels
+	Counts  []uint64
+	Count   uint64
+	Sum     float64
+	HasData bool
+}
+
+func newMetricsRegistry() *metricsRegistry {
+	latencyBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}
+	return &metricsRegistry{
+		requests: make(map[string]*metricSeries),
+		durationSeconds: histogram{
+			Buckets: latencyBuckets,
+			Series:  make(map[string]*histogramSeries),
+		},
+		queueWaitSeconds: histogram{
+			Buckets: latencyBuckets,
+			Series:  make(map[string]*histogramSeries),
+		},
+		firstEventSeconds: histogram{
+			Buckets: latencyBuckets,
+			Series:  make(map[string]*histogramSeries),
+		},
+	}
+}
+
+func requestMetricsFromModel(model config.ModelConfig, backend config.BackendConfig, status int, started time.Time) requestMetrics {
+	return requestMetrics{
+		Alias:       model.ID,
+		TargetModel: model.TargetModel,
+		Backend:     backend.ID,
+		Status:      status,
+		Started:     started,
+	}
+}
+
+func (registry *metricsRegistry) record(metrics requestMetrics) {
+	if registry == nil {
+		return
+	}
+
+	labels := metricLabels{
+		Alias:       metrics.Alias,
+		Backend:     metrics.Backend,
+		TargetModel: metrics.TargetModel,
+		Status:      strconv.Itoa(metrics.Status),
+		Streaming:   strconv.FormatBool(metrics.Streaming),
+	}
+	duration := time.Since(metrics.Started).Seconds()
+	if metrics.Started.IsZero() {
+		duration = 0
+	}
+
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	key := labels.key()
+	if registry.requests[key] == nil {
+		registry.requests[key] = &metricSeries{Labels: labels}
+	}
+	registry.requests[key].Value++
+	registry.durationSeconds.observe(labels, duration)
+	registry.queueWaitSeconds.observe(labels, metrics.QueueWait.Seconds())
+	if !metrics.FirstEvent.IsZero() {
+		registry.firstEventSeconds.observe(labels, metrics.FirstEvent.Sub(metrics.Started).Seconds())
+	}
+	registry.responseBytes += float64(metrics.Bytes)
+	registry.promptTokens += float64(metrics.PromptTokens)
+	registry.completionTokens += float64(metrics.CompletionTokens)
+	registry.totalTokens += float64(metrics.TotalTokens)
+}
+
+func (hist *histogram) observe(labels metricLabels, value float64) {
+	key := labels.key()
+	series := hist.Series[key]
+	if series == nil {
+		series = &histogramSeries{
+			Labels: labels,
+			Counts: make([]uint64, len(hist.Buckets)),
+		}
+		hist.Series[key] = series
+	}
+	for index, bucket := range hist.Buckets {
+		if value <= bucket {
+			series.Counts[index]++
+		}
+	}
+	series.Count++
+	series.Sum += value
+	series.HasData = true
+}
+
+func (registry *metricsRegistry) render() string {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	var builder strings.Builder
+	writeMetricHelp(&builder, "devrail_router_requests_total", "Total proxied or router-rejected OpenAI-compatible requests.")
+	writeMetricType(&builder, "devrail_router_requests_total", "counter")
+	for _, series := range sortedMetricSeries(registry.requests) {
+		writeMetricLine(&builder, "devrail_router_requests_total", series.Labels, series.Value)
+	}
+
+	writeHistogram(&builder, "devrail_router_request_duration_seconds", "End-to-end router request duration in seconds.", registry.durationSeconds)
+	writeHistogram(&builder, "devrail_router_queue_wait_seconds", "Time spent waiting for a model concurrency slot in seconds.", registry.queueWaitSeconds)
+	writeHistogram(&builder, "devrail_router_first_event_latency_seconds", "Time to first Server-Sent Event for streamed upstream responses in seconds.", registry.firstEventSeconds)
+
+	writeMetricHelp(&builder, "devrail_router_response_bytes_total", "Total response body bytes proxied from upstream backends.")
+	writeMetricType(&builder, "devrail_router_response_bytes_total", "counter")
+	writeMetricLine(&builder, "devrail_router_response_bytes_total", metricLabels{}, registry.responseBytes)
+
+	writeMetricHelp(&builder, "devrail_router_prompt_tokens_total", "Total OpenAI-compatible prompt tokens reported by upstream backends.")
+	writeMetricType(&builder, "devrail_router_prompt_tokens_total", "counter")
+	writeMetricLine(&builder, "devrail_router_prompt_tokens_total", metricLabels{}, registry.promptTokens)
+
+	writeMetricHelp(&builder, "devrail_router_completion_tokens_total", "Total OpenAI-compatible completion tokens reported by upstream backends.")
+	writeMetricType(&builder, "devrail_router_completion_tokens_total", "counter")
+	writeMetricLine(&builder, "devrail_router_completion_tokens_total", metricLabels{}, registry.completionTokens)
+
+	writeMetricHelp(&builder, "devrail_router_total_tokens_total", "Total OpenAI-compatible total tokens reported by upstream backends.")
+	writeMetricType(&builder, "devrail_router_total_tokens_total", "counter")
+	writeMetricLine(&builder, "devrail_router_total_tokens_total", metricLabels{}, registry.totalTokens)
+
+	return builder.String()
+}
+
+func writeHistogram(builder *strings.Builder, name, help string, hist histogram) {
+	writeMetricHelp(builder, name, help)
+	writeMetricType(builder, name, "histogram")
+	for _, series := range sortedHistogramSeries(hist.Series) {
+		if !series.HasData {
+			continue
+		}
+		for index, bucket := range hist.Buckets {
+			labels := series.Labels.with("le", strconv.FormatFloat(bucket, 'g', -1, 64))
+			writeMetricLine(builder, name+"_bucket", labels, float64(series.Counts[index]))
+		}
+		writeMetricLine(builder, name+"_bucket", series.Labels.with("le", "+Inf"), float64(series.Count))
+		writeMetricLine(builder, name+"_sum", series.Labels, series.Sum)
+		writeMetricLine(builder, name+"_count", series.Labels, float64(series.Count))
+	}
+}
+
+func writeMetricHelp(builder *strings.Builder, name, help string) {
+	fmt.Fprintf(builder, "# HELP %s %s\n", name, help)
+}
+
+func writeMetricType(builder *strings.Builder, name, metricType string) {
+	fmt.Fprintf(builder, "# TYPE %s %s\n", name, metricType)
+}
+
+func writeMetricLine(builder *strings.Builder, name string, labels metricLabels, value float64) {
+	fmt.Fprintf(builder, "%s%s %s\n", name, labels.prometheus(), strconv.FormatFloat(value, 'f', -1, 64))
+}
+
+func sortedMetricSeries(series map[string]*metricSeries) []*metricSeries {
+	keys := make([]string, 0, len(series))
+	for key := range series {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	values := make([]*metricSeries, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, series[key])
+	}
+	return values
+}
+
+func sortedHistogramSeries(series map[string]*histogramSeries) []*histogramSeries {
+	keys := make([]string, 0, len(series))
+	for key := range series {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	values := make([]*histogramSeries, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, series[key])
+	}
+	return values
+}
+
+func (labels metricLabels) key() string {
+	return labels.Alias + "\xff" + labels.Backend + "\xff" + labels.TargetModel + "\xff" + labels.Status + "\xff" + labels.Streaming
+}
+
+func (labels metricLabels) with(name, value string) metricLabels {
+	switch name {
+	case "le":
+		labels.Le = value
+	}
+	return labels
+}
+
+func (labels metricLabels) prometheus() string {
+	parts := []string{}
+	if labels.Alias != "" {
+		parts = append(parts, `alias="`+escapePrometheusLabel(labels.Alias)+`"`)
+	}
+	if labels.Backend != "" {
+		parts = append(parts, `backend="`+escapePrometheusLabel(labels.Backend)+`"`)
+	}
+	if labels.TargetModel != "" {
+		parts = append(parts, `target_model="`+escapePrometheusLabel(labels.TargetModel)+`"`)
+	}
+	if labels.Status != "" {
+		parts = append(parts, `status="`+escapePrometheusLabel(labels.Status)+`"`)
+	}
+	if labels.Streaming != "" {
+		parts = append(parts, `streaming="`+escapePrometheusLabel(labels.Streaming)+`"`)
+	}
+	if labels.Le != "" {
+		parts = append(parts, `le="`+escapePrometheusLabel(labels.Le)+`"`)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func escapePrometheusLabel(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+	return strings.ReplaceAll(value, `"`, `\"`)
 }
 
 func devrailRequestID(r *http.Request) string {

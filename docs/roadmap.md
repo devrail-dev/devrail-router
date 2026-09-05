@@ -23,11 +23,14 @@ This phase makes one local backend dependable for day-to-day tools such as
 opencode, OpenClaw, and Hermes.
 
 - Stable `/healthz` and `/v1/models` endpoints.
+- Prometheus-compatible `/metrics` endpoint.
 - Alias-to-target model rewriting.
 - Bounded per-alias queueing and concurrency limits.
 - Command-backed profile ensure hooks for LM Studio and similar hosts.
 - Response telemetry for route, status, duration, bytes, and usage tokens.
 - Streaming telemetry for first event latency and streamed usage chunks.
+- Metrics for request counts, queue waits, request duration, streamed first
+  event latency, response bytes, and token totals.
 - Linux tarball packaging with systemd installation.
 - Docker and Vagrant smoke tests.
 - Consistent OpenAI-shaped router errors.
@@ -66,6 +69,7 @@ vibe-based.
 - Structured request logs with request ID, alias, target model, upstream model,
   queue wait, ensure duration, first-token latency, total duration, status, and
   token usage.
+- Grafana-ready Prometheus metrics and starter dashboards for local operators.
 - Optional local JSONL telemetry sink for offline analysis.
 - Small repeatable eval harness for real agent workflows:
   - commit hook failure handling
@@ -100,7 +104,8 @@ This phase turns the router from a lab service into durable local infrastructure
 - Auth for non-loopback deployments.
 - Rate limits by client, alias, or token.
 - Admin endpoint or CLI for draining, reloading config, and inspecting state.
-- Prometheus metrics.
+- Expanded Prometheus metrics for backend lifecycle, adapter state, and client
+  rate limiting.
 - Signed release artifacts and package repository support.
 - Upgrade and rollback runbooks.
 - Omarchy and desktop integration profiles.

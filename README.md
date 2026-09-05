@@ -19,6 +19,7 @@ This repository is in early foundation work. The current service supports:
 
 - a small Go HTTP service
 - `/healthz`
+- `/metrics`
 - `/v1/models`
 - OpenAI-compatible `/v1/*` request proxying
 - model alias rewriting
@@ -29,6 +30,8 @@ This repository is in early foundation work. The current service supports:
 - Docker image and Compose smoke testing with a mock OpenAI-compatible backend
 - response telemetry for proxied backend calls
 - streaming response telemetry for first event latency and streamed usage data
+- Prometheus-compatible metrics for requests, queue wait, response latency,
+  first event latency, bytes, and token totals
 - consistent OpenAI-shaped errors for router-side failures
 - request IDs in router responses and logs
 
