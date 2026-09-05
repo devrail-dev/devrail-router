@@ -25,6 +25,7 @@ This repository is in early foundation work. The current service supports:
 - YAML configuration
 - Linux tarball packaging
 - Linux/systemd install script and unit
+- Docker image and Compose smoke testing with a mock OpenAI-compatible backend
 
 Routing policy, auth, telemetry, LM Studio lifecycle integration, and Omarchy
 integration are planned next.
@@ -71,6 +72,16 @@ make package-smoke GOOS=linux GOARCH=amd64
 The package is written to `dist/` and includes the binary, example config,
 systemd unit, and Linux installer.
 
+Run the containerized smoke stack:
+
+```sh
+make docker-smoke
+```
+
+The Compose stack starts DevRail Router plus a mock OpenAI-compatible backend
+and verifies health, model listing, alias rewriting, backend auth injection, and
+chat completion proxying.
+
 ## Configuration
 
 See `configs/router.example.yaml`.
@@ -105,6 +116,9 @@ Linux is the first-class target:
 - Service manager: systemd
 
 See `docs/packaging.md` and `packaging/systemd/devrail-router.service`.
+
+Docker is supported for proxy-only deployments and repeatable integration
+testing. See `compose.yaml` and `configs/router.docker.yaml`.
 
 Omarchy support is planned as a separate integration profile. See
 `integrations/omarchy/README.md`.

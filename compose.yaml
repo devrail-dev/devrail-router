@@ -1,0 +1,28 @@
+services:
+  router:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-0.1.0-dev}
+    image: devrail-router:${VERSION:-dev}
+    command: ["serve", "-config", "/etc/devrail/router.yaml"]
+    environment:
+      MOCK_OPENAI_API_KEY: compose-secret
+    ports:
+      - "127.0.0.1:${DEVRAIL_ROUTER_HOST_PORT:-0}:8080"
+    volumes:
+      - ./configs/router.docker.yaml:/etc/devrail/router.yaml:ro
+    depends_on:
+      mock-openai:
+        condition: service_started
+
+  mock-openai:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-0.1.0-dev}
+    image: devrail-router:${VERSION:-dev}
+    entrypoint: ["/usr/local/bin/mock-openai-backend"]
+    command: ["-address", "0.0.0.0:9000", "-expected-api-key", "compose-secret"]
+    expose:
+      - "9000"

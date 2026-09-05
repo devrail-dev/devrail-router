@@ -58,6 +58,45 @@ func TestUnknownAliasReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestJoinOpenAIPathAvoidsDuplicateVersionPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		basePath    string
+		requestPath string
+		want        string
+	}{
+		{
+			name:        "versioned base",
+			basePath:    "/v1",
+			requestPath: "/v1/chat/completions",
+			want:        "/v1/chat/completions",
+		},
+		{
+			name:        "root base",
+			basePath:    "",
+			requestPath: "/v1/chat/completions",
+			want:        "/v1/chat/completions",
+		},
+		{
+			name:        "nested base",
+			basePath:    "/openai",
+			requestPath: "/v1/chat/completions",
+			want:        "/openai/v1/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := joinOpenAIPath(tt.basePath, tt.requestPath); got != tt.want {
+				t.Fatalf("joinOpenAIPath(%q, %q) = %q, want %q", tt.basePath, tt.requestPath, got, tt.want)
+			}
+		})
+	}
+}
+
 func testServer(t *testing.T) *Server {
 	t.Helper()
 

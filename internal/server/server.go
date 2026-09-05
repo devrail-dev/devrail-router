@@ -111,7 +111,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		req.URL.Path = joinPath(target.Path, r.URL.Path)
+		req.URL.Path = joinOpenAIPath(target.Path, r.URL.Path)
 		req.Host = target.Host
 		setBackendAuth(req, backend)
 	}
@@ -178,6 +178,17 @@ func setBackendAuth(req *http.Request, backend config.BackendConfig) {
 
 func joinPath(basePath, requestPath string) string {
 	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(requestPath, "/")
+}
+
+func joinOpenAIPath(basePath, requestPath string) string {
+	basePath = strings.TrimRight(basePath, "/")
+	if basePath != "" && basePath != "/" {
+		if requestPath == basePath || strings.HasPrefix(requestPath, basePath+"/") {
+			return requestPath
+		}
+	}
+
+	return joinPath(basePath, requestPath)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
