@@ -27,6 +27,7 @@ VAGRANT_DESTROY   ?= 1
 DIST_DIR          ?= dist
 BIN_DIR           ?= bin
 PACKAGE_NAME      := devrail-router_$(VERSION)_$(GOOS)_$(GOARCH)
+RELEASE_TARGETS   ?= linux/amd64 linux/arm64 darwin/arm64
 
 DOCKER_RUN := docker run --rm \
 	-v "$$(pwd):/workspace" \
@@ -54,7 +55,7 @@ HAS_RUST       := $(filter rust,$(LANGUAGES))
 # ---------------------------------------------------------------------------
 # .PHONY declarations
 # ---------------------------------------------------------------------------
-.PHONY: help build clean docker-build docker-smoke lint format fix package package-smoke test security scan docs changelog check install-hooks init vagrant-smoke
+.PHONY: help build clean docker-build docker-smoke lint format fix package package-smoke release-artifacts test security scan docs changelog check install-hooks init vagrant-smoke
 .PHONY: _lint _format _fix _test _security _scan _docs _changelog _check _check-config _init
 
 # ===========================================================================
@@ -160,6 +161,22 @@ package-smoke: package ## Build and smoke-test the tarball package
 	fi; \
 	bash -n "$$tmp_dir/$(PACKAGE_NAME)/packaging/linux/install.sh"; \
 	test -f "$$tmp_dir/$(PACKAGE_NAME)/packaging/systemd/devrail-router.service"
+
+release-artifacts: ## Build versioned release tarballs and SHA256SUMS
+	@rm -rf "$(DIST_DIR)/release"
+	@mkdir -p "$(DIST_DIR)/release"
+	@set -e; \
+	for target in $(RELEASE_TARGETS); do \
+		goos=$${target%/*}; \
+		goarch=$${target#*/}; \
+		$(MAKE) package VERSION="$(VERSION)" GOOS="$$goos" GOARCH="$$goarch" DIST_DIR="$(DIST_DIR)/release" BIN_DIR="$(BIN_DIR)/$$goos-$$goarch"; \
+	done; \
+	cd "$(DIST_DIR)/release"; \
+	if command -v sha256sum >/dev/null 2>&1; then \
+		sha256sum *.tar.gz > SHA256SUMS; \
+	else \
+		shasum -a 256 *.tar.gz > SHA256SUMS; \
+	fi
 
 scan: ## Run universal scanners (trivy, gitleaks)
 	$(DOCKER_RUN) make _scan
