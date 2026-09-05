@@ -1,0 +1,17 @@
+# Docker workflow builds the image and runs the Compose smoke test against a
+# mock OpenAI-compatible backend.
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke-test Compose stack
+        run: make docker-smoke

@@ -51,7 +51,7 @@ HAS_RUST       := $(filter rust,$(LANGUAGES))
 # ---------------------------------------------------------------------------
 # .PHONY declarations
 # ---------------------------------------------------------------------------
-.PHONY: help build clean lint format fix package package-smoke test security scan docs changelog check install-hooks init
+.PHONY: help build clean docker-build docker-smoke lint format fix package package-smoke test security scan docs changelog check install-hooks init vagrant-smoke
 .PHONY: _lint _format _fix _test _security _scan _docs _changelog _check _check-config _init
 
 # ===========================================================================
@@ -83,6 +83,12 @@ clean: ## Remove build and package outputs
 
 docs: ## Generate documentation
 	$(DOCKER_RUN) make _docs
+
+docker-build: ## Build the DevRail Router container image
+	docker build --build-arg VERSION="$(VERSION)" -t devrail-router:$(VERSION) .
+
+docker-smoke: ## Run Docker Compose smoke test against a mock OpenAI backend
+	bash test/smoke/docker-compose.sh
 
 fix: ## Auto-fix formatting issues in-place
 	$(DOCKER_RUN) make _fix
@@ -159,6 +165,14 @@ security: ## Run language-specific security scanners
 
 test: ## Run all tests
 	$(DOCKER_RUN) make _test
+
+vagrant-smoke: ## Run optional Vagrant systemd installer smoke test
+	@if ! command -v vagrant >/dev/null 2>&1; then \
+		echo "Error: vagrant is required for vagrant-smoke"; \
+		exit 2; \
+	fi
+	$(MAKE) package GOOS=linux GOARCH=amd64
+	vagrant up --provision
 
 # ===========================================================================
 # Internal targets (run inside container — do NOT invoke directly)

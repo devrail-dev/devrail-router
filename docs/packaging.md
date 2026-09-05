@@ -66,11 +66,70 @@ A container image is useful for proxy-only deployments and CI smoke tests. It is
 not the first-class LM Studio host install path because local desktop app and GPU
 integration are easier from a native Linux service.
 
+Build the image:
+
+```sh
+make docker-build
+```
+
+Run the Compose smoke stack:
+
+```sh
+make docker-smoke
+```
+
+The smoke stack uses `configs/router.docker.yaml` and starts two services:
+
+- `router`: DevRail Router listening on an ephemeral `127.0.0.1` host port
+- `mock-openai`: a tiny OpenAI-compatible backend used only for tests
+
+Set `DEVRAIL_ROUTER_HOST_PORT` to override the host port:
+
+```sh
+DEVRAIL_ROUTER_HOST_PORT=18081 make docker-smoke
+```
+
+The smoke script verifies:
+
+- `/healthz` responds
+- `/v1/models` exposes configured aliases
+- `local-coder` is rewritten to the configured target model
+- `local-coder-large` is rewritten separately
+- backend auth is injected from `MOCK_OPENAI_API_KEY`
+- chat completion requests are proxied end to end
+
+This is intentionally not a replacement for systemd acceptance testing. Docker
+does not prove native installer behavior, service restart behavior, journald
+logging, LM Studio desktop integration, `lms` discovery, or GPU/runtime behavior.
+
 ## Omarchy
 
 Omarchy support should be an integration profile, not a fork of the core router.
 See `integrations/omarchy/README.md` for the expected plugin layout and safety
 constraints.
+
+## Vagrant Acceptance Smoke
+
+Vagrant is optional and aimed at native Linux installer acceptance. It is useful
+for the systemd/user/config paths that Docker does not model cleanly.
+
+```sh
+make vagrant-smoke
+```
+
+The Vagrant smoke test builds a Linux AMD64 tarball, boots an Ubuntu VM, installs
+DevRail Router through `packaging/linux/install.sh`, starts the systemd service,
+checks `/healthz` and `/v1/models`, verifies reinstall preserves
+`/etc/devrail/router.yaml`, and restarts the service.
+
+Use `DEVRAIL_VAGRANT_BOX` to try another Linux box:
+
+```sh
+DEVRAIL_VAGRANT_BOX=bento/fedora-40 make vagrant-smoke
+```
+
+The Vagrant harness is not run in CI yet because it needs a local provider such
+as VirtualBox, libvirt, or another Vagrant-compatible VM backend.
 
 ## macOS ARM
 
