@@ -37,11 +37,15 @@ func main() {
 			return
 		}
 		var payload struct {
-			Model string `json:"model"`
+			Model              string `json:"model"`
+			DevRailMockDelayMS int    `json:"devrail_mock_delay_ms"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(w, fmt.Sprintf("decode request: %v", err), http.StatusBadRequest)
 			return
+		}
+		if payload.DevRailMockDelayMS > 0 {
+			time.Sleep(time.Duration(payload.DevRailMockDelayMS) * time.Millisecond)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":      "chatcmpl-mock",

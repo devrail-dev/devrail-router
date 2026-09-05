@@ -9,6 +9,9 @@ models:
     context_window: 65536
     max_output_tokens: 4096
     tool_calls: true
+    max_concurrent_requests: 2
+    max_queue_size: 4
+    queue_timeout: 30s
   - id: local-coder-large
     name: Local Coder Large
     backend: mock-openai
@@ -16,6 +19,9 @@ models:
     context_window: 131072
     max_output_tokens: 4096
     tool_calls: true
+    max_concurrent_requests: 1
+    max_queue_size: 2
+    queue_timeout: 2m
 
 backends:
   - id: mock-openai

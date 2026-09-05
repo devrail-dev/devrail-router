@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,7 +17,8 @@ import (
 )
 
 type Server struct {
-	cfg config.Config
+	cfg      config.Config
+	limiters map[string]*modelLimiter
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -24,7 +26,18 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	return &Server{cfg: cfg}, nil
+	limiters := make(map[string]*modelLimiter, len(cfg.Models))
+	for _, model := range cfg.Models {
+		limiter, err := newModelLimiter(model)
+		if err != nil {
+			return nil, err
+		}
+		if limiter != nil {
+			limiters[model.ID] = limiter
+		}
+	}
+
+	return &Server{cfg: cfg, limiters: limiters}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +104,14 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	release, ok := s.acquireModelSlot(w, r, model)
+	if !ok {
+		return
+	}
+	if release != nil {
+		defer release()
+	}
+
 	body, err = rewriteModel(body, model.TargetModel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -122,6 +143,45 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("routing request", "alias", model.ID, "target_model", model.TargetModel, "backend", backend.ID)
 	proxy.ServeHTTP(w, r)
+}
+
+func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig) (func(), bool) {
+	limiter, ok := s.limiters[model.ID]
+	if !ok {
+		return nil, true
+	}
+
+	waited, snapshot, release, err := limiter.acquire(r.Context())
+	if err == nil {
+		w.Header().Set("X-Devrail-Queue-Wait-Ms", fmt.Sprintf("%d", waited.Milliseconds()))
+		slog.Info(
+			"acquired model slot",
+			"alias", model.ID,
+			"active", snapshot.active,
+			"queued", snapshot.queued,
+			"wait_ms", waited.Milliseconds(),
+		)
+		return release, true
+	}
+
+	switch {
+	case errors.Is(err, errQueueFull):
+		writeOpenAIError(w, http.StatusTooManyRequests, "model queue is full", "devrail_queue_full", "queue_full")
+	case errors.Is(err, errQueueTimeout):
+		writeOpenAIError(w, http.StatusServiceUnavailable, "timed out waiting for model queue", "devrail_queue_timeout", "queue_timeout")
+	default:
+		writeOpenAIError(w, http.StatusRequestTimeout, "request canceled while waiting for model queue", "devrail_queue_canceled", "queue_canceled")
+	}
+
+	slog.Warn(
+		"rejected queued request",
+		"alias", model.ID,
+		"active", snapshot.active,
+		"queued", snapshot.queued,
+		"wait_ms", waited.Milliseconds(),
+		"error", err,
+	)
+	return nil, false
 }
 
 func requestModel(r *http.Request) (string, []byte, error) {
@@ -197,4 +257,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		slog.Error("write response", "error", err)
 	}
+}
+
+func writeOpenAIError(w http.ResponseWriter, status int, message, errorType, code string) {
+	writeJSON(w, status, map[string]any{
+		"error": map[string]string{
+			"message": message,
+			"type":    errorType,
+			"code":    code,
+		},
+	})
 }

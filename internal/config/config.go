@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,13 +23,16 @@ type ServerConfig struct {
 }
 
 type ModelConfig struct {
-	ID              string `yaml:"id"`
-	Name            string `yaml:"name"`
-	Backend         string `yaml:"backend"`
-	TargetModel     string `yaml:"target_model"`
-	ContextWindow   int    `yaml:"context_window"`
-	MaxOutputTokens int    `yaml:"max_output_tokens"`
-	ToolCalls       bool   `yaml:"tool_calls"`
+	ID                    string `yaml:"id"`
+	Name                  string `yaml:"name"`
+	Backend               string `yaml:"backend"`
+	TargetModel           string `yaml:"target_model"`
+	ContextWindow         int    `yaml:"context_window"`
+	MaxOutputTokens       int    `yaml:"max_output_tokens"`
+	ToolCalls             bool   `yaml:"tool_calls"`
+	MaxConcurrentRequests int    `yaml:"max_concurrent_requests"`
+	MaxQueueSize          int    `yaml:"max_queue_size"`
+	QueueTimeout          string `yaml:"queue_timeout"`
 }
 
 type BackendConfig struct {
@@ -102,6 +106,15 @@ func (cfg Config) Validate() error {
 		if model.TargetModel == "" {
 			return fmt.Errorf("model %q target_model is required", model.ID)
 		}
+		if model.MaxConcurrentRequests < 0 {
+			return fmt.Errorf("model %q max_concurrent_requests must be non-negative", model.ID)
+		}
+		if model.MaxQueueSize < 0 {
+			return fmt.Errorf("model %q max_queue_size must be non-negative", model.ID)
+		}
+		if _, err := model.QueueTimeoutDuration(); err != nil {
+			return fmt.Errorf("model %q queue_timeout is invalid: %w", model.ID, err)
+		}
 		if _, ok := models[model.ID]; ok {
 			return fmt.Errorf("model %q is duplicated", model.ID)
 		}
@@ -129,4 +142,20 @@ func (cfg Config) Backend(id string) (BackendConfig, bool) {
 	}
 
 	return BackendConfig{}, false
+}
+
+func (model ModelConfig) QueueTimeoutDuration() (time.Duration, error) {
+	if model.QueueTimeout == "" {
+		return 0, nil
+	}
+
+	duration, err := time.ParseDuration(model.QueueTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if duration < 0 {
+		return 0, errors.New("duration must be non-negative")
+	}
+
+	return duration, nil
 }
