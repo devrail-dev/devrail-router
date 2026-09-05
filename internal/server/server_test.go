@@ -63,6 +63,65 @@ func TestUnknownAliasReturnsBadRequest(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: %d", rec.Code)
 	}
+	assertOpenAIErrorCode(t, rec.Body.Bytes(), "unknown_model_alias")
+}
+
+func TestMalformedRequestReturnsOpenAIError(t *testing.T) {
+	t.Parallel()
+
+	srv := testServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[]}`),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if rec.Header().Get("X-Devrail-Request-ID") == "" {
+		t.Fatal("expected request id response header")
+	}
+	assertOpenAIErrorCode(t, rec.Body.Bytes(), "invalid_request")
+}
+
+func TestRequestIDHeaderIsPropagated(t *testing.T) {
+	t.Parallel()
+
+	var backendRequestID string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendRequestID = r.Header.Get("X-Request-ID")
+		writeJSON(w, http.StatusOK, map[string]string{"model": "target-model"})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder","messages":[]}`),
+	)
+	req.Header.Set("X-Request-ID", "test-request-id")
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Devrail-Request-ID"); got != "test-request-id" {
+		t.Fatalf("unexpected response request id: %q", got)
+	}
+	if backendRequestID != "test-request-id" {
+		t.Fatalf("unexpected backend request id: %q", backendRequestID)
+	}
 }
 
 func TestJoinOpenAIPathAvoidsDuplicateVersionPrefix(t *testing.T) {
@@ -381,6 +440,7 @@ func TestBackendResponseTelemetryLogsUsage(t *testing.T) {
 	logText := logs.String()
 	for _, want := range []string{
 		`"msg":"backend response completed"`,
+		`"request_id":`,
 		`"alias":"local-coder"`,
 		`"target_model":"target-model"`,
 		`"upstream_model":"target-model"`,
@@ -393,6 +453,29 @@ func TestBackendResponseTelemetryLogsUsage(t *testing.T) {
 			t.Fatalf("expected log to contain %s, got logs:\n%s", want, logText)
 		}
 	}
+}
+
+func TestBackendProxyErrorReturnsOpenAIError(t *testing.T) {
+	t.Parallel()
+
+	srv := testServerWithBackend(t, "http://127.0.0.1:1/v1", config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder","messages":[]}`),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	assertOpenAIErrorCode(t, rec.Body.Bytes(), "backend_request_failed")
 }
 
 func testServer(t *testing.T) *Server {
@@ -436,4 +519,20 @@ func serveChat(t *testing.T, srv *Server, model string) int {
 	srv.ServeHTTP(rec, req)
 	_, _ = io.Copy(io.Discard, rec.Result().Body)
 	return rec.Code
+}
+
+func assertOpenAIErrorCode(t *testing.T, raw []byte, want string) {
+	t.Helper()
+
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode error response: %v\nbody: %s", err, string(raw))
+	}
+	if payload.Error.Code != want {
+		t.Fatalf("unexpected error code: %q, want %q", payload.Error.Code, want)
+	}
 }

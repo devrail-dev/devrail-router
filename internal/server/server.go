@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,25 +100,28 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
+	requestID := devrailRequestID(r)
+	w.Header().Set("X-Devrail-Request-ID", requestID)
+
 	modelID, body, err := requestModel(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
 
 	model, ok := s.cfg.Model(modelID)
 	if !ok {
-		http.Error(w, fmt.Sprintf("unknown model alias %q", modelID), http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("unknown model alias %q", modelID), "invalid_request_error", "unknown_model_alias")
 		return
 	}
 
 	backend, ok := s.cfg.Backend(model.Backend)
 	if !ok {
-		http.Error(w, fmt.Sprintf("unknown backend %q", model.Backend), http.StatusInternalServerError)
+		writeOpenAIError(w, http.StatusInternalServerError, fmt.Sprintf("unknown backend %q", model.Backend), "devrail_config_error", "unknown_backend")
 		return
 	}
 
-	release, ok := s.acquireModelSlot(w, r, model)
+	release, ok := s.acquireModelSlot(w, r, model, requestID)
 	if !ok {
 		return
 	}
@@ -124,13 +129,13 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
-	if !s.ensureModelReady(w, r, model) {
+	if !s.ensureModelReady(w, r, model, requestID) {
 		return
 	}
 
 	body, err = rewriteModel(body, model.TargetModel)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		return
 	}
 
@@ -140,7 +145,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 
 	target, err := url.Parse(backend.BaseURL)
 	if err != nil {
-		http.Error(w, "backend base_url is invalid", http.StatusInternalServerError)
+		writeOpenAIError(w, http.StatusInternalServerError, "backend base_url is invalid", "devrail_config_error", "invalid_backend_base_url")
 		return
 	}
 
@@ -154,7 +159,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		setBackendAuth(req, backend)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		instrumentBackendResponse(resp, started, model, backend)
+		instrumentBackendResponse(resp, started, model, backend, requestID)
 		return nil
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -162,20 +167,21 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 			"backend request failed",
 			"method", req.Method,
 			"path", req.URL.Path,
+			"request_id", requestID,
 			"alias", model.ID,
 			"target_model", model.TargetModel,
 			"backend", backend.ID,
 			"duration_ms", time.Since(started).Milliseconds(),
 			"error", proxyErr,
 		)
-		http.Error(rw, "backend request failed", http.StatusBadGateway)
+		writeOpenAIError(rw, http.StatusBadGateway, "backend request failed", "devrail_backend_error", "backend_request_failed")
 	}
 
-	slog.Info("routing request", "alias", model.ID, "target_model", model.TargetModel, "backend", backend.ID)
+	slog.Info("routing request", "request_id", requestID, "alias", model.ID, "target_model", model.TargetModel, "backend", backend.ID)
 	proxy.ServeHTTP(w, r)
 }
 
-func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig) (func(), bool) {
+func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig, requestID string) (func(), bool) {
 	limiter, ok := s.limiters[model.ID]
 	if !ok {
 		return nil, true
@@ -186,6 +192,7 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 		w.Header().Set("X-Devrail-Queue-Wait-Ms", fmt.Sprintf("%d", waited.Milliseconds()))
 		slog.Info(
 			"acquired model slot",
+			"request_id", requestID,
 			"alias", model.ID,
 			"active", snapshot.active,
 			"queued", snapshot.queued,
@@ -205,6 +212,7 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 
 	slog.Warn(
 		"rejected queued request",
+		"request_id", requestID,
 		"alias", model.ID,
 		"active", snapshot.active,
 		"queued", snapshot.queued,
@@ -214,7 +222,7 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 	return nil, false
 }
 
-func (s *Server) ensureModelReady(w http.ResponseWriter, r *http.Request, model config.ModelConfig) bool {
+func (s *Server) ensureModelReady(w http.ResponseWriter, r *http.Request, model config.ModelConfig, requestID string) bool {
 	if model.Ensure.Mode == "" || model.Ensure.Mode == "disabled" {
 		return true
 	}
@@ -229,14 +237,14 @@ func (s *Server) ensureModelReady(w http.ResponseWriter, r *http.Request, model 
 
 	switch model.Ensure.Mode {
 	case "command":
-		return s.ensureModelReadyWithCommand(w, r, model)
+		return s.ensureModelReadyWithCommand(w, r, model, requestID)
 	default:
 		writeOpenAIError(w, http.StatusInternalServerError, "model ensure mode is unsupported", "devrail_ensure_unsupported", "ensure_unsupported")
 		return false
 	}
 }
 
-func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Request, model config.ModelConfig) bool {
+func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Request, model config.ModelConfig, requestID string) bool {
 	timeout, err := model.Ensure.TimeoutDuration()
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "model ensure timeout is invalid", "devrail_ensure_config_error", "ensure_config_error")
@@ -264,6 +272,7 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 
 		slog.Warn(
 			"model ensure command failed",
+			"request_id", requestID,
 			"alias", model.ID,
 			"target_model", model.TargetModel,
 			"error", err,
@@ -275,6 +284,7 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 
 	slog.Info(
 		"model ensure command completed",
+		"request_id", requestID,
 		"alias", model.ID,
 		"target_model", model.TargetModel,
 		"output", outputText,
@@ -283,6 +293,7 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 }
 
 type responseTelemetry struct {
+	RequestID        string
 	Alias            string
 	TargetModel      string
 	Backend          string
@@ -320,6 +331,7 @@ func (body *telemetryReadCloser) log() {
 	body.once.Do(func() {
 		slog.Info(
 			"backend response completed",
+			"request_id", body.telemetry.RequestID,
 			"alias", body.telemetry.Alias,
 			"target_model", body.telemetry.TargetModel,
 			"upstream_model", body.telemetry.UpstreamModel,
@@ -334,12 +346,13 @@ func (body *telemetryReadCloser) log() {
 	})
 }
 
-func instrumentBackendResponse(resp *http.Response, started time.Time, model config.ModelConfig, backend config.BackendConfig) {
+func instrumentBackendResponse(resp *http.Response, started time.Time, model config.ModelConfig, backend config.BackendConfig, requestID string) {
 	if resp.Body == nil {
 		return
 	}
 
 	telemetry := &responseTelemetry{
+		RequestID:   requestID,
 		Alias:       model.ID,
 		TargetModel: model.TargetModel,
 		Backend:     backend.ID,
@@ -391,6 +404,22 @@ func applyOpenAIUsageTelemetry(raw []byte, telemetry *responseTelemetry) {
 	telemetry.PromptTokens = payload.Usage.PromptTokens
 	telemetry.CompletionTokens = payload.Usage.CompletionTokens
 	telemetry.TotalTokens = payload.Usage.TotalTokens
+}
+
+func devrailRequestID(r *http.Request) string {
+	for _, header := range []string{"X-Devrail-Request-ID", "X-Request-ID"} {
+		value := strings.TrimSpace(r.Header.Get(header))
+		if value != "" {
+			return value
+		}
+	}
+
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 func requestModel(r *http.Request) (string, []byte, error) {

@@ -27,9 +27,12 @@ This repository is in early foundation work. The current service supports:
 - Linux tarball packaging
 - Linux/systemd install script and unit
 - Docker image and Compose smoke testing with a mock OpenAI-compatible backend
+- response telemetry for proxied backend calls
+- consistent OpenAI-shaped errors for router-side failures
+- request IDs in router responses and logs
 
-Routing policy, auth, telemetry, native LM Studio lifecycle integration, and
-Omarchy integration are planned next.
+Routing policy, auth, native LM Studio lifecycle integration, richer telemetry,
+and Omarchy integration are planned next. See [docs/roadmap.md](docs/roadmap.md).
 
 Model aliases can also set basic concurrency guardrails with
 `max_concurrent_requests`, `max_queue_size`, and `queue_timeout`. This lets heavy

@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Opt-in command-backed model profile ensure hooks.
+- Roadmap for maturing DevRail Router from a single-backend gateway into an
+  observable local inference control plane.
+- Request IDs are now added to router responses and structured logs.
+
+### Changed
+
+- Router-originated proxy and request validation failures now return
+  OpenAI-shaped JSON errors consistently.
 
 ## [1.0.0] - 2026-03-01
 
