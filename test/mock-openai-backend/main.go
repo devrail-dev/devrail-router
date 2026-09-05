@@ -60,6 +60,11 @@ func main() {
 				},
 				"finish_reason": "stop",
 			}},
+			"usage": map[string]int{
+				"prompt_tokens":     12,
+				"completion_tokens": 4,
+				"total_tokens":      16,
+			},
 		})
 	})
 

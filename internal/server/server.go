@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/devrail-dev/devrail-router/internal/config"
 )
@@ -144,6 +145,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	started := time.Now()
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
@@ -151,8 +153,21 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		req.Host = target.Host
 		setBackendAuth(req, backend)
 	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		instrumentBackendResponse(resp, started, model, backend)
+		return nil
+	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
-		slog.Error("backend request failed", "method", req.Method, "path", req.URL.Path, "backend", backend.ID, "error", proxyErr)
+		slog.Error(
+			"backend request failed",
+			"method", req.Method,
+			"path", req.URL.Path,
+			"alias", model.ID,
+			"target_model", model.TargetModel,
+			"backend", backend.ID,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", proxyErr,
+		)
 		http.Error(rw, "backend request failed", http.StatusBadGateway)
 	}
 
@@ -265,6 +280,117 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 		"output", outputText,
 	)
 	return true
+}
+
+type responseTelemetry struct {
+	Alias            string
+	TargetModel      string
+	Backend          string
+	UpstreamModel    string
+	Status           int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Bytes            int64
+	Started          time.Time
+}
+
+type telemetryReadCloser struct {
+	body      io.ReadCloser
+	telemetry *responseTelemetry
+	once      sync.Once
+}
+
+func (body *telemetryReadCloser) Read(p []byte) (int, error) {
+	n, err := body.body.Read(p)
+	body.telemetry.Bytes += int64(n)
+	if errors.Is(err, io.EOF) {
+		body.log()
+	}
+	return n, err
+}
+
+func (body *telemetryReadCloser) Close() error {
+	err := body.body.Close()
+	body.log()
+	return err
+}
+
+func (body *telemetryReadCloser) log() {
+	body.once.Do(func() {
+		slog.Info(
+			"backend response completed",
+			"alias", body.telemetry.Alias,
+			"target_model", body.telemetry.TargetModel,
+			"upstream_model", body.telemetry.UpstreamModel,
+			"backend", body.telemetry.Backend,
+			"status", body.telemetry.Status,
+			"duration_ms", time.Since(body.telemetry.Started).Milliseconds(),
+			"bytes", body.telemetry.Bytes,
+			"prompt_tokens", body.telemetry.PromptTokens,
+			"completion_tokens", body.telemetry.CompletionTokens,
+			"total_tokens", body.telemetry.TotalTokens,
+		)
+	})
+}
+
+func instrumentBackendResponse(resp *http.Response, started time.Time, model config.ModelConfig, backend config.BackendConfig) {
+	if resp.Body == nil {
+		return
+	}
+
+	telemetry := &responseTelemetry{
+		Alias:       model.ID,
+		TargetModel: model.TargetModel,
+		Backend:     backend.ID,
+		Status:      resp.StatusCode,
+		Started:     started,
+	}
+
+	if isJSONResponse(resp) {
+		raw, err := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Warn("close backend response body", "alias", model.ID, "backend", backend.ID, "error", closeErr)
+		}
+		if err == nil {
+			applyOpenAIUsageTelemetry(raw, telemetry)
+			resp.Body = io.NopCloser(bytes.NewReader(raw))
+			resp.ContentLength = int64(len(raw))
+			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(raw)))
+		} else {
+			slog.Warn("read backend response body for telemetry", "alias", model.ID, "backend", backend.ID, "error", err)
+			resp.Body = io.NopCloser(bytes.NewReader(nil))
+			resp.ContentLength = 0
+			resp.Header.Set("Content-Length", "0")
+		}
+	}
+
+	resp.Body = &telemetryReadCloser{body: resp.Body, telemetry: telemetry}
+}
+
+func isJSONResponse(resp *http.Response) bool {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	return strings.Contains(contentType, "application/json")
+}
+
+func applyOpenAIUsageTelemetry(raw []byte, telemetry *responseTelemetry) {
+	var payload struct {
+		Model string `json:"model"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+
+	telemetry.UpstreamModel = payload.Model
+	telemetry.PromptTokens = payload.Usage.PromptTokens
+	telemetry.CompletionTokens = payload.Usage.CompletionTokens
+	telemetry.TotalTokens = payload.Usage.TotalTokens
 }
 
 func requestModel(r *http.Request) (string, []byte, error) {
