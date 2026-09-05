@@ -139,7 +139,7 @@ package: build ## Build a Linux/macOS tarball package
 		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/systemd" \
 		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux"
 	cp configs/router.example.yaml "$(DIST_DIR)/$(PACKAGE_NAME)/configs/"
-	cp docs/architecture.md docs/packaging.md "$(DIST_DIR)/$(PACKAGE_NAME)/docs/"
+	cp docs/architecture.md docs/packaging.md docs/roadmap.md "$(DIST_DIR)/$(PACKAGE_NAME)/docs/"
 	cp packaging/systemd/devrail-router.service "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/systemd/"
 	cp packaging/linux/install.sh "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux/"
 	chmod 0755 "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router" \
