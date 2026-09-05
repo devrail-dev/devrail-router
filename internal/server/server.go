@@ -299,6 +299,8 @@ type responseTelemetry struct {
 	Backend          string
 	UpstreamModel    string
 	Status           int
+	Streaming        bool
+	FirstEvent       time.Time
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
@@ -329,21 +331,102 @@ func (body *telemetryReadCloser) Close() error {
 
 func (body *telemetryReadCloser) log() {
 	body.once.Do(func() {
-		slog.Info(
-			"backend response completed",
-			"request_id", body.telemetry.RequestID,
-			"alias", body.telemetry.Alias,
-			"target_model", body.telemetry.TargetModel,
-			"upstream_model", body.telemetry.UpstreamModel,
-			"backend", body.telemetry.Backend,
-			"status", body.telemetry.Status,
-			"duration_ms", time.Since(body.telemetry.Started).Milliseconds(),
-			"bytes", body.telemetry.Bytes,
-			"prompt_tokens", body.telemetry.PromptTokens,
-			"completion_tokens", body.telemetry.CompletionTokens,
-			"total_tokens", body.telemetry.TotalTokens,
-		)
+		logTelemetry(body.telemetry)
 	})
+}
+
+func (telemetry responseTelemetry) firstEventMilliseconds() int64 {
+	if telemetry.FirstEvent.IsZero() {
+		return 0
+	}
+
+	return telemetry.FirstEvent.Sub(telemetry.Started).Milliseconds()
+}
+
+type streamTelemetryReadCloser struct {
+	body       io.ReadCloser
+	telemetry  *responseTelemetry
+	lineBuffer string
+	once       sync.Once
+}
+
+func (body *streamTelemetryReadCloser) Read(p []byte) (int, error) {
+	n, err := body.body.Read(p)
+	body.telemetry.Bytes += int64(n)
+	body.observe(p[:n])
+	if errors.Is(err, io.EOF) {
+		body.log()
+	}
+	return n, err
+}
+
+func (body *streamTelemetryReadCloser) Close() error {
+	err := body.body.Close()
+	body.log()
+	return err
+}
+
+func (body *streamTelemetryReadCloser) observe(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+
+	body.lineBuffer += string(chunk)
+	for {
+		index := strings.IndexByte(body.lineBuffer, '\n')
+		if index < 0 {
+			break
+		}
+		line := strings.TrimRight(body.lineBuffer[:index], "\r")
+		body.lineBuffer = body.lineBuffer[index+1:]
+		body.observeLine(line)
+	}
+
+	if len(body.lineBuffer) > 64*1024 {
+		body.lineBuffer = ""
+	}
+}
+
+func (body *streamTelemetryReadCloser) observeLine(line string) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "data:") {
+		return
+	}
+
+	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if data == "" || data == "[DONE]" {
+		return
+	}
+
+	if body.telemetry.FirstEvent.IsZero() {
+		body.telemetry.FirstEvent = time.Now()
+	}
+	applyOpenAIUsageTelemetry([]byte(data), body.telemetry)
+}
+
+func (body *streamTelemetryReadCloser) log() {
+	body.once.Do(func() {
+		logTelemetry(body.telemetry)
+	})
+}
+
+func logTelemetry(telemetry *responseTelemetry) {
+	slog.Info(
+		"backend response completed",
+		"request_id", telemetry.RequestID,
+		"alias", telemetry.Alias,
+		"target_model", telemetry.TargetModel,
+		"upstream_model", telemetry.UpstreamModel,
+		"backend", telemetry.Backend,
+		"status", telemetry.Status,
+		"streaming", telemetry.Streaming,
+		"first_event_ms", telemetry.firstEventMilliseconds(),
+		"duration_ms", time.Since(telemetry.Started).Milliseconds(),
+		"bytes", telemetry.Bytes,
+		"prompt_tokens", telemetry.PromptTokens,
+		"completion_tokens", telemetry.CompletionTokens,
+		"total_tokens", telemetry.TotalTokens,
+	)
 }
 
 func instrumentBackendResponse(resp *http.Response, started time.Time, model config.ModelConfig, backend config.BackendConfig, requestID string) {
@@ -358,6 +441,12 @@ func instrumentBackendResponse(resp *http.Response, started time.Time, model con
 		Backend:     backend.ID,
 		Status:      resp.StatusCode,
 		Started:     started,
+	}
+
+	if isEventStreamResponse(resp) {
+		telemetry.Streaming = true
+		resp.Body = &streamTelemetryReadCloser{body: resp.Body, telemetry: telemetry}
+		return
 	}
 
 	if isJSONResponse(resp) {
@@ -379,6 +468,11 @@ func instrumentBackendResponse(resp *http.Response, started time.Time, model con
 	}
 
 	resp.Body = &telemetryReadCloser{body: resp.Body, telemetry: telemetry}
+}
+
+func isEventStreamResponse(resp *http.Response) bool {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	return strings.Contains(contentType, "text/event-stream")
 }
 
 func isJSONResponse(resp *http.Response) bool {

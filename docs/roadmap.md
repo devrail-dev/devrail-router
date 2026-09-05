@@ -27,6 +27,7 @@ opencode, OpenClaw, and Hermes.
 - Bounded per-alias queueing and concurrency limits.
 - Command-backed profile ensure hooks for LM Studio and similar hosts.
 - Response telemetry for route, status, duration, bytes, and usage tokens.
+- Streaming telemetry for first event latency and streamed usage chunks.
 - Linux tarball packaging with systemd installation.
 - Docker and Vagrant smoke tests.
 - Consistent OpenAI-shaped router errors.
@@ -36,7 +37,6 @@ Useful next work:
 
 - Add readiness checks for configured backends.
 - Add configurable upstream transport timeouts.
-- Capture streaming completion telemetry without buffering streams.
 - Publish example configs for common LM Studio, Ollama, and vLLM setups.
 
 ## Phase 2: Native Backend Adapters

@@ -28,6 +28,7 @@ This repository is in early foundation work. The current service supports:
 - Linux/systemd install script and unit
 - Docker image and Compose smoke testing with a mock OpenAI-compatible backend
 - response telemetry for proxied backend calls
+- streaming response telemetry for first event latency and streamed usage data
 - consistent OpenAI-shaped errors for router-side failures
 - request IDs in router responses and logs
 
