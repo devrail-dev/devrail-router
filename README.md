@@ -30,6 +30,11 @@ This repository is in early foundation work. The current service supports:
 Routing policy, auth, telemetry, LM Studio lifecycle integration, and Omarchy
 integration are planned next.
 
+Model aliases can also set basic concurrency guardrails with
+`max_concurrent_requests`, `max_queue_size`, and `queue_timeout`. This lets heavy
+local models wait or reject predictably instead of allowing multiple agents to
+dogpile the same backend.
+
 ## Quick Start
 
 Build and test locally:
@@ -98,6 +103,9 @@ models:
     context_window: 65536
     max_output_tokens: 4096
     tool_calls: true
+    max_concurrent_requests: 2
+    max_queue_size: 4
+    queue_timeout: 30s
 
 backends:
   - id: lmstudio

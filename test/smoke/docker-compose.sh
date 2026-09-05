@@ -10,11 +10,15 @@ compose() {
 }
 
 docker_helper_dir=""
+tmp_dir=""
 
 cleanup() {
 	compose down --remove-orphans --volumes >/dev/null 2>&1 || true
 	if [ -n "$docker_helper_dir" ]; then
 		rm -rf "$docker_helper_dir"
+	fi
+	if [ -n "$tmp_dir" ]; then
+		rm -rf "$tmp_dir"
 	fi
 }
 trap cleanup EXIT
@@ -77,5 +81,38 @@ large_response=$(
 
 echo "$large_response" | grep -q '"model":"qwen/qwen3.6-35b-a3b"'
 echo "$large_response" | grep -q 'ok from qwen/qwen3.6-35b-a3b'
+
+tmp_dir=$(mktemp -d)
+delayed_body="$tmp_dir/delayed.json"
+queued_headers="$tmp_dir/queued.headers"
+queued_body="$tmp_dir/queued.json"
+
+curl -fsS "$router_url/v1/chat/completions" \
+	-H 'Content-Type: application/json' \
+	-d '{
+		"model": "local-coder-large",
+		"messages": [{"role": "user", "content": "Hold the slot."}],
+		"max_tokens": 16,
+		"devrail_mock_delay_ms": 400
+	}' >"$delayed_body" &
+delayed_pid=$!
+
+sleep 0.05
+
+curl -fsS "$router_url/v1/chat/completions" \
+	-D "$queued_headers" \
+	-H 'Content-Type: application/json' \
+	-d '{
+		"model": "local-coder-large",
+		"messages": [{"role": "user", "content": "Queue behind the slot."}],
+		"max_tokens": 16
+	}' >"$queued_body"
+
+wait "$delayed_pid"
+
+queue_wait_ms=$(awk -F': ' 'tolower($1)=="x-devrail-queue-wait-ms" {gsub("\r", "", $2); print $2}' "$queued_headers")
+test "${queue_wait_ms:-0}" -gt 0
+grep -q 'ok from qwen/qwen3.6-35b-a3b' "$queued_body"
+grep -q 'ok from qwen/qwen3.6-35b-a3b' "$delayed_body"
 
 echo "docker compose smoke passed"
