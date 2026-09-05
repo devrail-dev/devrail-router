@@ -507,6 +507,94 @@ func TestStreamingBackendTelemetryLogsUsage(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointExposesRequestTelemetry(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"model": payload.Model,
+			"usage": map[string]int{
+				"prompt_tokens":     9,
+				"completion_tokens": 3,
+				"total_tokens":      12,
+			},
+		})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+
+	if status := serveChat(t, srv, "local-coder"); status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", status)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE devrail_router_requests_total counter",
+		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="false"} 1`,
+		`devrail_router_request_duration_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="false",le="+Inf"} 1`,
+		"devrail_router_prompt_tokens_total 9",
+		"devrail_router_completion_tokens_total 3",
+		"devrail_router_total_tokens_total 12",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsEndpointExposesStreamingFirstEventLatency(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"model\":\"target-model\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder","messages":[],"stream":true}`),
+	)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+
+	for _, want := range []string{
+		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="true"} 1`,
+		`devrail_router_first_event_latency_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="true",le="+Inf"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+		}
+	}
+}
+
 func TestBackendProxyErrorReturnsOpenAIError(t *testing.T) {
 	t.Parallel()
 
