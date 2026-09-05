@@ -21,6 +21,9 @@ DEVRAIL_LOG_FORMAT ?= json
 VERSION           ?= 0.1.0-dev
 GOOS              ?= $(shell go env GOOS 2>/dev/null || echo linux)
 GOARCH            ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
+VAGRANT_GOARCH    ?= $(shell go env GOHOSTARCH 2>/dev/null || echo amd64)
+VAGRANT_PROVIDER  ?= qemu
+VAGRANT_DESTROY   ?= 1
 DIST_DIR          ?= dist
 BIN_DIR           ?= bin
 PACKAGE_NAME      := devrail-router_$(VERSION)_$(GOOS)_$(GOARCH)
@@ -139,7 +142,8 @@ package: build ## Build a Linux/macOS tarball package
 	cp packaging/linux/install.sh "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux/"
 	chmod 0755 "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router" \
 		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux/install.sh"
-	(cd "$(DIST_DIR)" && tar -czf "$(PACKAGE_NAME).tar.gz" "$(PACKAGE_NAME)")
+	@if command -v xattr >/dev/null 2>&1; then xattr -rc "$(DIST_DIR)/$(PACKAGE_NAME)"; fi
+	(cd "$(DIST_DIR)" && COPYFILE_DISABLE=1 tar --no-xattrs -czf "$(PACKAGE_NAME).tar.gz" "$(PACKAGE_NAME)")
 
 package-smoke: package ## Build and smoke-test the tarball package
 	@set -e; \
@@ -171,8 +175,9 @@ vagrant-smoke: ## Run optional Vagrant systemd installer smoke test
 		echo "Error: vagrant is required for vagrant-smoke"; \
 		exit 2; \
 	fi
-	$(MAKE) package GOOS=linux GOARCH=amd64
-	vagrant up --provision
+	$(MAKE) package GOOS=linux GOARCH=$(VAGRANT_GOARCH)
+	DEVRAIL_VAGRANT_GOARCH="$(VAGRANT_GOARCH)" vagrant up --provider="$(VAGRANT_PROVIDER)" --provision
+	@if [ "$(VAGRANT_DESTROY)" = "1" ]; then vagrant destroy -f; fi
 
 # ===========================================================================
 # Internal targets (run inside container — do NOT invoke directly)

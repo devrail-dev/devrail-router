@@ -117,15 +117,33 @@ for the systemd/user/config paths that Docker does not model cleanly.
 make vagrant-smoke
 ```
 
-The Vagrant smoke test builds a Linux AMD64 tarball, boots an Ubuntu VM, installs
+The Vagrant smoke test builds a Linux package, boots an Ubuntu VM, installs
 DevRail Router through `packaging/linux/install.sh`, starts the systemd service,
 checks `/healthz` and `/v1/models`, verifies reinstall preserves
-`/etc/devrail/router.yaml`, and restarts the service.
+`/etc/devrail/router.yaml`, restarts the service, and destroys the VM after a
+successful run.
+
+On Apple Silicon Macs, the default Vagrant box is ARM64 and `make vagrant-smoke`
+builds a Linux ARM64 package. On x86 hosts, the default package architecture is
+Linux AMD64.
 
 Use `DEVRAIL_VAGRANT_BOX` to try another Linux box:
 
 ```sh
 DEVRAIL_VAGRANT_BOX=bento/fedora-40 make vagrant-smoke
+```
+
+Use `VAGRANT_PROVIDER` and `VAGRANT_GOARCH` to override provider or package
+architecture:
+
+```sh
+VAGRANT_PROVIDER=virtualbox VAGRANT_GOARCH=amd64 make vagrant-smoke
+```
+
+Keep the VM after a run for debugging:
+
+```sh
+VAGRANT_DESTROY=0 make vagrant-smoke
 ```
 
 The Vagrant harness is not run in CI yet because it needs a local provider such
