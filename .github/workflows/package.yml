@@ -17,8 +17,13 @@ jobs:
           go-version-file: go.mod
       - name: Smoke-test package
         run: make package-smoke GOOS=linux GOARCH=amd64
+      - name: Build release artifact set
+        run: make release-artifacts VERSION=0.1.0-ci
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: devrail-router-linux-amd64
-          path: dist/*.tar.gz
+          name: devrail-router-release-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/release/*.tar.gz
+            dist/release/SHA256SUMS

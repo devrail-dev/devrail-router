@@ -27,6 +27,23 @@ Build a Linux AMD64 tarball and run package smoke checks:
 make package-smoke GOOS=linux GOARCH=amd64
 ```
 
+Build the full release artifact set:
+
+```sh
+make release-artifacts VERSION=0.1.0
+```
+
+The release set currently builds:
+
+- `linux/amd64`
+- `linux/arm64`
+- `darwin/arm64`
+- `SHA256SUMS`
+
+Tagged releases matching `v*.*.*` publish these artifacts to GitHub Releases.
+Downstream automation should pin a tag and checksum instead of installing from
+GitHub Actions artifacts.
+
 The generated archive is written to `dist/` with this layout:
 
 ```text
@@ -157,3 +174,32 @@ macOS support should arrive after the Linux service is stable:
 - launchd plist
 - LM Studio adapter using macOS paths
 - no local GPU assumptions for the first macOS release
+
+## Future Package Managers
+
+Native package-manager support should build on the release tarballs rather than
+replace them. The tarballs are the stable payload; package managers add metadata,
+dependency checks, service hooks, and update UX.
+
+Prerequisites for apt, rpm, and Homebrew:
+
+- Immutable SemVer tags such as `v0.1.0`.
+- Reproducible release artifacts for each supported OS/architecture.
+- `SHA256SUMS` published with every release.
+- Stable install paths: `/usr/local/bin/devrail-router`,
+  `/etc/devrail/router.yaml`, `/var/lib/devrail-router`, and systemd unit name
+  `devrail-router.service`.
+- Upgrade-safe config handling that never overwrites local config unless
+  explicitly requested.
+- Package smoke tests that install, start, health-check, restart, and remove the
+  service on a fresh Linux system.
+- Signed releases before public package repositories are advertised.
+
+Recommended packaging order:
+
+1. GitHub Release tarballs plus checksums.
+2. Ansible role consuming pinned release artifacts.
+3. Debian package generated from the same payload, probably with `nfpm`.
+4. RPM package generated from the same payload.
+5. Homebrew tap formula for macOS ARM and Linuxbrew users.
+6. Omarchy plugin that installs/configures DevRail Router from a pinned release.
