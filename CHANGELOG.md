@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- Updated beta banner to v1 stable
+- Opt-in command-backed model profile ensure hooks.
 
 ## [1.0.0] - 2026-03-01
 

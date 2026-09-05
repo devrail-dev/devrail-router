@@ -70,6 +70,76 @@ func TestValidateQueueSettings(t *testing.T) {
 	}
 }
 
+func TestLoadEnsureCommandString(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "router.yaml")
+	raw := []byte(`
+models:
+  - id: local-coder
+    backend: lmstudio
+    target_model: qwen3-coder-30b-a3b-instruct
+    ensure:
+      mode: command
+      command: /usr/local/bin/lmstudio-load-profile local-coder
+      timeout: 5s
+backends:
+  - id: lmstudio
+    type: openai-compatible
+    base_url: http://127.0.0.1:1234/v1
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	model := cfg.Models[0]
+	if model.Ensure.Mode != "command" {
+		t.Fatalf("unexpected ensure mode: %q", model.Ensure.Mode)
+	}
+	if got := []string(model.Ensure.Command); len(got) != 3 || got[0] != "/bin/sh" || got[1] != "-c" {
+		t.Fatalf("unexpected command args: %#v", got)
+	}
+	duration, err := model.Ensure.TimeoutDuration()
+	if err != nil {
+		t.Fatalf("parse timeout: %v", err)
+	}
+	if duration != 5*time.Second {
+		t.Fatalf("unexpected timeout: %s", duration)
+	}
+}
+
+func TestValidateEnsureCommandRequired(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:          "local-coder",
+			Backend:     "lmstudio",
+			TargetModel: "qwen/qwen3.6-35b-a3b",
+			Ensure: EnsureConfig{
+				Mode: "command",
+			},
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "ensure") {
+		t.Fatalf("expected ensure error, got: %v", err)
+	}
+}
+
 func TestValidateInvalidQueueTimeout(t *testing.T) {
 	t.Parallel()
 

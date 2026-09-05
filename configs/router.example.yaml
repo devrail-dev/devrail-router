@@ -12,6 +12,12 @@ models:
     max_concurrent_requests: 2
     max_queue_size: 4
     queue_timeout: 30s
+    ensure:
+      mode: command
+      command:
+        - /usr/local/bin/lmstudio-load-profile
+        - local-coder
+      timeout: 30s
   - id: local-coder-large
     name: Local Coder Large
     backend: lmstudio
@@ -22,6 +28,12 @@ models:
     max_concurrent_requests: 1
     max_queue_size: 2
     queue_timeout: 2m
+    ensure:
+      mode: command
+      command:
+        - /usr/local/bin/lmstudio-load-profile
+        - local-coder-large
+      timeout: 45s
 
 backends:
   - id: lmstudio

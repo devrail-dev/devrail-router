@@ -27,6 +27,7 @@ VAGRANT_DESTROY   ?= 1
 DIST_DIR          ?= dist
 BIN_DIR           ?= bin
 PACKAGE_NAME      := devrail-router_$(VERSION)_$(GOOS)_$(GOARCH)
+BUILD_OUTPUT      := $(BIN_DIR)/devrail-router_$(GOOS)_$(GOARCH)
 RELEASE_TARGETS   ?= linux/amd64 linux/arm64 darwin/arm64
 
 DOCKER_RUN := docker run --rm \
@@ -73,7 +74,7 @@ build: ## Build the devrail-router binary for GOOS/GOARCH
 	CGO_ENABLED=0 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build \
 		-trimpath \
 		-ldflags "-s -w -X main.version=$(VERSION)" \
-		-o "$(BIN_DIR)/devrail-router" \
+		-o "$(BUILD_OUTPUT)" \
 		./cmd/devrail-router
 
 changelog: ## Generate CHANGELOG.md from conventional commits
@@ -131,7 +132,7 @@ lint: ## Run all linters
 package: build ## Build a Linux/macOS tarball package
 	@rm -rf "$(DIST_DIR)/$(PACKAGE_NAME)"
 	@mkdir -p "$(DIST_DIR)/$(PACKAGE_NAME)"
-	cp "$(BIN_DIR)/devrail-router" "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router"
+	cp "$(BUILD_OUTPUT)" "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router"
 	cp LICENSE README.md CHANGELOG.md "$(DIST_DIR)/$(PACKAGE_NAME)/"
 	mkdir -p "$(DIST_DIR)/$(PACKAGE_NAME)/configs" \
 		"$(DIST_DIR)/$(PACKAGE_NAME)/docs" \
