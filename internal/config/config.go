@@ -33,6 +33,7 @@ type ModelConfig struct {
 	MaxConcurrentRequests int    `yaml:"max_concurrent_requests"`
 	MaxQueueSize          int    `yaml:"max_queue_size"`
 	QueueTimeout          string `yaml:"queue_timeout"`
+	Ensure                EnsureConfig
 }
 
 type BackendConfig struct {
@@ -40,6 +41,39 @@ type BackendConfig struct {
 	Type      string `yaml:"type"`
 	BaseURL   string `yaml:"base_url"`
 	APIKeyEnv string `yaml:"api_key_env"`
+}
+
+type EnsureConfig struct {
+	Mode    string      `yaml:"mode"`
+	Command CommandArgs `yaml:"command"`
+	Timeout string      `yaml:"timeout"`
+}
+
+type CommandArgs []string
+
+func (args *CommandArgs) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var command string
+		if err := value.Decode(&command); err != nil {
+			return err
+		}
+		if command == "" {
+			*args = nil
+			return nil
+		}
+		*args = []string{"/bin/sh", "-c", command}
+		return nil
+	case yaml.SequenceNode:
+		var command []string
+		if err := value.Decode(&command); err != nil {
+			return err
+		}
+		*args = command
+		return nil
+	default:
+		return fmt.Errorf("command must be a string or list of strings")
+	}
 }
 
 func Load(path string) (Config, error) {
@@ -115,6 +149,9 @@ func (cfg Config) Validate() error {
 		if _, err := model.QueueTimeoutDuration(); err != nil {
 			return fmt.Errorf("model %q queue_timeout is invalid: %w", model.ID, err)
 		}
+		if err := model.Ensure.Validate(); err != nil {
+			return fmt.Errorf("model %q ensure is invalid: %w", model.ID, err)
+		}
 		if _, ok := models[model.ID]; ok {
 			return fmt.Errorf("model %q is duplicated", model.ID)
 		}
@@ -155,6 +192,42 @@ func (model ModelConfig) QueueTimeoutDuration() (time.Duration, error) {
 	}
 	if duration < 0 {
 		return 0, errors.New("duration must be non-negative")
+	}
+
+	return duration, nil
+}
+
+func (ensure EnsureConfig) Validate() error {
+	switch ensure.Mode {
+	case "", "disabled":
+		return nil
+	case "command":
+		if len(ensure.Command) == 0 {
+			return errors.New("command is required when mode is command")
+		}
+		for _, arg := range ensure.Command {
+			if arg == "" {
+				return errors.New("command arguments must not be empty")
+			}
+		}
+		_, err := ensure.TimeoutDuration()
+		return err
+	default:
+		return fmt.Errorf("unknown mode %q", ensure.Mode)
+	}
+}
+
+func (ensure EnsureConfig) TimeoutDuration() (time.Duration, error) {
+	if ensure.Timeout == "" {
+		return 30 * time.Second, nil
+	}
+
+	duration, err := time.ParseDuration(ensure.Timeout)
+	if err != nil {
+		return 0, err
+	}
+	if duration <= 0 {
+		return 0, errors.New("duration must be positive")
 	}
 
 	return duration, nil

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +12,17 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/devrail-dev/devrail-router/internal/config"
 )
 
 type Server struct {
-	cfg      config.Config
-	limiters map[string]*modelLimiter
+	cfg         config.Config
+	limiters    map[string]*modelLimiter
+	ensureLocks map[string]*sync.Mutex
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -37,7 +41,14 @@ func New(cfg config.Config) (*Server, error) {
 		}
 	}
 
-	return &Server{cfg: cfg, limiters: limiters}, nil
+	ensureLocks := make(map[string]*sync.Mutex, len(cfg.Models))
+	for _, model := range cfg.Models {
+		if model.Ensure.Mode != "" && model.Ensure.Mode != "disabled" {
+			ensureLocks[model.ID] = &sync.Mutex{}
+		}
+	}
+
+	return &Server{cfg: cfg, limiters: limiters, ensureLocks: ensureLocks}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +123,10 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
+	if !s.ensureModelReady(w, r, model) {
+		return
+	}
+
 	body, err = rewriteModel(body, model.TargetModel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -182,6 +197,74 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 		"error", err,
 	)
 	return nil, false
+}
+
+func (s *Server) ensureModelReady(w http.ResponseWriter, r *http.Request, model config.ModelConfig) bool {
+	if model.Ensure.Mode == "" || model.Ensure.Mode == "disabled" {
+		return true
+	}
+
+	lock := s.ensureLocks[model.ID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+	}
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	switch model.Ensure.Mode {
+	case "command":
+		return s.ensureModelReadyWithCommand(w, r, model)
+	default:
+		writeOpenAIError(w, http.StatusInternalServerError, "model ensure mode is unsupported", "devrail_ensure_unsupported", "ensure_unsupported")
+		return false
+	}
+}
+
+func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Request, model config.ModelConfig) bool {
+	timeout, err := model.Ensure.TimeoutDuration()
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "model ensure timeout is invalid", "devrail_ensure_config_error", "ensure_config_error")
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	command := []string(model.Ensure.Command)
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	output, err := cmd.CombinedOutput()
+	outputText := strings.TrimSpace(string(output))
+	if len(outputText) > 2048 {
+		outputText = outputText[:2048] + "...[truncated]"
+	}
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		message := "model profile is not ready"
+		code := "ensure_failed"
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			message = "timed out ensuring model profile"
+			code = "ensure_timeout"
+		}
+
+		slog.Warn(
+			"model ensure command failed",
+			"alias", model.ID,
+			"target_model", model.TargetModel,
+			"error", err,
+			"output", outputText,
+		)
+		writeOpenAIError(w, status, message, "devrail_"+code, code)
+		return false
+	}
+
+	slog.Info(
+		"model ensure command completed",
+		"alias", model.ID,
+		"target_model", model.TargetModel,
+		"output", outputText,
+	)
+	return true
 }
 
 func requestModel(r *http.Request) (string, []byte, error) {

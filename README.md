@@ -22,18 +22,24 @@ This repository is in early foundation work. The current service supports:
 - `/v1/models`
 - OpenAI-compatible `/v1/*` request proxying
 - model alias rewriting
+- opt-in model profile ensure hooks
 - YAML configuration
 - Linux tarball packaging
 - Linux/systemd install script and unit
 - Docker image and Compose smoke testing with a mock OpenAI-compatible backend
 
-Routing policy, auth, telemetry, LM Studio lifecycle integration, and Omarchy
-integration are planned next.
+Routing policy, auth, telemetry, native LM Studio lifecycle integration, and
+Omarchy integration are planned next.
 
 Model aliases can also set basic concurrency guardrails with
 `max_concurrent_requests`, `max_queue_size`, and `queue_timeout`. This lets heavy
 local models wait or reject predictably instead of allowing multiple agents to
 dogpile the same backend.
+
+Aliases can opt into a command-backed `ensure` hook before proxying. This is
+intended for host adapters such as LM Studio profile loaders that need to
+guarantee context length, parallelism, TTL, or model identifier before a client
+request reaches the backend.
 
 ## Quick Start
 
@@ -106,6 +112,12 @@ models:
     max_concurrent_requests: 2
     max_queue_size: 4
     queue_timeout: 30s
+    ensure:
+      mode: command
+      command:
+        - /usr/local/bin/lmstudio-load-profile
+        - local-coder
+      timeout: 30s
 
 backends:
   - id: lmstudio

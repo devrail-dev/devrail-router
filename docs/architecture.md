@@ -32,6 +32,7 @@ parallelism, TTL, GPU offload, auth, or scheduling policy.
 The first router is deliberately simple:
 
 - Clients request a DevRail model alias.
+- The router optionally runs an alias-specific readiness hook.
 - The router rewrites the request to the configured backend model.
 - The backend handles inference.
 
@@ -62,3 +63,33 @@ full, DevRail Router returns an OpenAI-shaped `429` error. If the request waits
 longer than `queue_timeout`, it returns `503`. Successful queued requests get an
 `X-Devrail-Queue-Wait-Ms` response header, and queue decisions are logged with
 active count, queued count, and wait time.
+
+## Profile Ensure Hooks
+
+Backends such as LM Studio can Just-In-Time load models, but backend defaults may
+not match the alias contract that clients see. For example, an alias may
+advertise a 64k context window while the backend's default JIT load only creates
+an 8k context. A model alias can opt into a command-backed ensure hook:
+
+```yaml
+models:
+  - id: local-coder
+    backend: lmstudio
+    target_model: qwen3-coder-30b-a3b-instruct
+    context_window: 65536
+    ensure:
+      mode: command
+      command:
+        - /usr/local/bin/lmstudio-load-profile
+        - local-coder
+      timeout: 30s
+```
+
+The ensure hook runs after queue slot acquisition and before request forwarding.
+If it fails or times out, DevRail Router returns an OpenAI-shaped `503` error and
+does not send the request to the backend. This keeps clients from hanging behind
+a model that is unloaded, incorrectly loaded, or busy switching profiles.
+
+Command hooks are a conservative bridge for early local integrations. Native
+backend adapters can later inspect runtime state directly and choose between
+passive JIT loading, profile enforcement, or refusing unsafe model switches.

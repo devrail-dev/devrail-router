@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -261,6 +263,67 @@ func TestModelLimiterTimesOutQueuedRequest(t *testing.T) {
 	close(releaseBackend)
 	if status := <-firstDone; status != http.StatusOK {
 		t.Fatalf("unexpected first status: %d", status)
+	}
+}
+
+func TestEnsureCommandRunsBeforeProxy(t *testing.T) {
+	t.Parallel()
+
+	ensureFile := filepath.Join(t.TempDir(), "ensured")
+	ensureCommand := []string{"/bin/sh", "-c", "printf ready > " + ensureFile}
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := os.Stat(ensureFile); err != nil {
+			t.Errorf("ensure command did not run before backend request: %v", err)
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+		Ensure: config.EnsureConfig{
+			Mode:    "command",
+			Command: ensureCommand,
+			Timeout: "1s",
+		},
+	})
+
+	if status := serveChat(t, srv, "local-coder"); status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", status)
+	}
+}
+
+func TestEnsureCommandFailureReturnsServiceUnavailable(t *testing.T) {
+	t.Parallel()
+
+	var backendCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+		Ensure: config.EnsureConfig{
+			Mode:    "command",
+			Command: []string{"/bin/sh", "-c", "echo nope >&2; exit 7"},
+			Timeout: "1s",
+		},
+	})
+
+	if status := serveChat(t, srv, "local-coder"); status != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status: %d", status)
+	}
+	if backendCalls.Load() != 0 {
+		t.Fatalf("backend received %d calls, want 0", backendCalls.Load())
 	}
 }
 
