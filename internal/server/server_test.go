@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -324,6 +326,72 @@ func TestEnsureCommandFailureReturnsServiceUnavailable(t *testing.T) {
 	}
 	if backendCalls.Load() != 0 {
 		t.Fatalf("backend received %d calls, want 0", backendCalls.Load())
+	}
+}
+
+func TestBackendResponseTelemetryLogsUsage(t *testing.T) {
+	var logs bytes.Buffer
+	originalLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(originalLogger)
+	})
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   payload.Model,
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": "ok",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]int{
+				"prompt_tokens":     51,
+				"completion_tokens": 4,
+				"total_tokens":      55,
+			},
+		})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+
+	if status := serveChat(t, srv, "local-coder"); status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", status)
+	}
+
+	logText := logs.String()
+	for _, want := range []string{
+		`"msg":"backend response completed"`,
+		`"alias":"local-coder"`,
+		`"target_model":"target-model"`,
+		`"upstream_model":"target-model"`,
+		`"status":200`,
+		`"prompt_tokens":51`,
+		`"completion_tokens":4`,
+		`"total_tokens":55`,
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected log to contain %s, got logs:\n%s", want, logText)
+		}
 	}
 }
 
