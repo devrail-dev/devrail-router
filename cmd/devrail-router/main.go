@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/devrail-dev/devrail-router/internal/bench"
 	"github.com/devrail-dev/devrail-router/internal/config"
 	"github.com/devrail-dev/devrail-router/internal/server"
 )
@@ -31,6 +32,8 @@ func run(args []string) int {
 		return serve(args[1:])
 	case "check":
 		return check(args[1:])
+	case "bench":
+		return runBench(args[1:])
 	case "version":
 		fmt.Println(version)
 		return 0
@@ -97,6 +100,32 @@ func serve(args []string) int {
 	return 0
 }
 
+func runBench(args []string) int {
+	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
+	baseURL := fs.String("base-url", "http://127.0.0.1:8080/v1", "OpenAI-compatible base URL")
+	model := fs.String("model", "local-coder", "model alias to benchmark")
+	casesPath := fs.String("cases", "test/bench/local-coder.cases.json", "JSON benchmark cases file")
+	apiKey := fs.String("api-key", os.Getenv("OPENAI_API_KEY"), "API key for the target endpoint")
+	maxTokens := fs.Int("max-tokens", 512, "max completion tokens per case")
+	timeout := fs.Duration("timeout", 5*time.Minute, "timeout per benchmark case")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if err := bench.Run(context.Background(), bench.Options{
+		BaseURL:   *baseURL,
+		Model:     *model,
+		APIKey:    *apiKey,
+		CasesPath: *casesPath,
+		MaxTokens: *maxTokens,
+		Timeout:   *timeout,
+	}); err != nil {
+		slog.Error("benchmark failed", "error", err)
+		return 1
+	}
+	return 0
+}
+
 func check(args []string) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	configPath := fs.String("config", config.DefaultPath, "path to router config")
@@ -120,6 +149,7 @@ func usage() {
 Usage:
   devrail-router serve [-config path]
   devrail-router check [-config path]
+  devrail-router bench [-base-url url] [-model alias] [-cases path]
   devrail-router version
 
 `, version)
