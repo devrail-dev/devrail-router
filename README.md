@@ -34,6 +34,7 @@ This repository is in early foundation work. The current service supports:
   first event latency, bytes, and token totals
 - consistent OpenAI-shaped errors for router-side failures
 - request IDs in router responses and logs
+- a streamed benchmark harness for comparing model aliases with fixed prompts
 
 Routing policy, auth, native LM Studio lifecycle integration, richer telemetry,
 and Omarchy integration are planned next. See [docs/roadmap.md](docs/roadmap.md).
@@ -99,6 +100,17 @@ make docker-smoke
 The Compose stack starts DevRail Router plus a mock OpenAI-compatible backend
 and verifies health, model listing, alias rewriting, backend auth injection, and
 chat completion proxying.
+
+Run repeatable streamed benchmark cases against a router alias:
+
+```sh
+go run ./cmd/devrail-router bench \
+  -base-url http://llm-srv-01.mfsoho.linkridge.net:18080/v1 \
+  -model local-coder \
+  -cases test/bench/local-coder.cases.json
+```
+
+See [docs/benchmarking.md](docs/benchmarking.md).
 
 ## Configuration
 

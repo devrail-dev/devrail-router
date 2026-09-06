@@ -1,0 +1,23 @@
+[
+  {
+    "id": "small-refactor",
+    "prompt": "You are reviewing a Go function that has duplicated nil checks. Describe a small refactor, then provide only the revised function body."
+  },
+  {
+    "id": "test-plan",
+    "prompt": "Given a local-first LLM router with request queueing, streaming responses, and Prometheus metrics, write a focused test plan with five high-value checks."
+  },
+  {
+    "id": "bug-hunt",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a senior Go reviewer. Be concise."
+      },
+      {
+        "role": "user",
+        "content": "Find the most likely production risk in a reverse proxy that rewrites JSON request bodies, forwards streaming SSE responses, and records latency metrics. Explain the risk and one mitigation."
+      }
+    ]
+  }
+]
