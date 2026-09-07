@@ -25,12 +25,18 @@ func TestObserveSSECapturesFirstContentAndUsage(t *testing.T) {
 		"",
 	}, "\n"))
 
-	usage, firstSample, bytesRead, firstEventMS, err := ObserveSSE(stream, time.Now().Add(-150*time.Millisecond))
+	usage, firstSample, contentSample, reasoningSample, bytesRead, firstEventMS, err := ObserveSSE(stream, time.Now().Add(-150*time.Millisecond))
 	if err != nil {
 		t.Fatalf("observe stream: %v", err)
 	}
 	if firstSample != "hello" {
 		t.Fatalf("unexpected first sample: %q", firstSample)
+	}
+	if contentSample != "hello world" {
+		t.Fatalf("unexpected content sample: %q", contentSample)
+	}
+	if reasoningSample != "" {
+		t.Fatalf("unexpected reasoning sample: %q", reasoningSample)
 	}
 	if firstEventMS < 100 {
 		t.Fatalf("first event too small: %d", firstEventMS)
@@ -113,6 +119,9 @@ func TestRunCaseStreamsAgainstOpenAICompatibleBackend(t *testing.T) {
 	}
 	if result.FirstContentSample != "ok" {
 		t.Fatalf("unexpected first sample: %q", result.FirstContentSample)
+	}
+	if result.ContentSample != "ok" {
+		t.Fatalf("unexpected content sample: %q", result.ContentSample)
 	}
 	if requestPayload.Model != "local-coder" || !requestPayload.Stream {
 		t.Fatalf("unexpected request payload: %+v", requestPayload)

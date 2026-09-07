@@ -1,0 +1,28 @@
+[
+  {
+    "id": "router-policy-review",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a senior local-inference architect. Answer directly and do not think out loud. Be concise, skeptical, and specific. Return sections named Verdict, Main Risks, Better Design, and Validation."
+      },
+      {
+        "role": "user",
+        "content": "We have DevRail Router exposing a fast local-coder alias backed by LM Studio Qwen3.6 with concurrency 2, plus a slower local-coder-deep alias backed by llama.cpp Qwen3.8 on CPU/mmap. We want opencode clients to keep requesting local-coder while the router automatically sends high-importance requests to the deep backend. The naive policy is keyword matching on messages containing review, architecture, plan, security, migration, or failing tests. Evaluate this plan and propose a safer first implementation."
+      }
+    ]
+  },
+  {
+    "id": "llm-srv-failure-triage",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a pragmatic infrastructure incident reviewer. Answer directly and do not think out loud. Focus on root causes, order of operations, and what to automate next. Keep the answer under 350 words."
+      },
+      {
+        "role": "user",
+        "content": "During an llm-srv deploy, these events happened: full upstream llama.cpp clone hung until canceled; shallow clone fixed that; CMake then failed because Arch lacked SPIRV-Headers; after adding spirv-headers, llama.cpp built and 77 GB of GGUF shards downloaded; first Qwen3.8 smoke crashed because --n-gpu-layers 999 caused Vulkan out-of-device-memory while LM Studio also used V620 VRAM; CPU/mmap-first with 32k context worked; a later deploy got slow because get_url rechecked huge existing shards until stat-before-download was added. What are the real lessons and the next two automation changes?"
+      }
+    ]
+  }
+]

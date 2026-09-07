@@ -16,6 +16,9 @@ stdout. Each result captures:
 - response bytes
 - prompt, completion, and total tokens when the backend emits streamed usage
 - a short first-content sample for sanity checking
+- a bounded content sample for lightweight quality comparison
+- a bounded reasoning sample when a backend streams OpenAI-style
+  `reasoning_content`
 
 ## Local-Coder Baseline
 
@@ -74,3 +77,29 @@ Or an explicit OpenAI-style message list:
 
 Use stable, short IDs. They appear in JSONL output and make it easier to line
 up command results with router request IDs, logs, and Prometheus samples.
+
+## Hard-Thinking Comparison
+
+Use `test/bench/hard-thinking.cases.json` when comparing a normal coding alias
+with a slower planner/reviewer alias:
+
+```sh
+go run ./cmd/devrail-router bench \
+  -base-url http://llm-srv-01.mfsoho.linkridge.net:18080/v1 \
+  -model local-coder \
+  -cases test/bench/hard-thinking.cases.json \
+  -max-tokens 768 \
+  > local-coder-hard-thinking.jsonl
+
+go run ./cmd/devrail-router bench \
+  -base-url http://llm-srv-01.mfsoho.linkridge.net:18080/v1 \
+  -model local-coder-deep \
+  -cases test/bench/hard-thinking.cases.json \
+  -max-tokens 768 \
+  -timeout 20m \
+  > local-coder-deep-hard-thinking.jsonl
+```
+
+The deep alias may spend early tokens on reasoning before emitting normal
+content, so use a larger token cap than a smoke test. Compare both timings and
+the `content_sample` field before making a slower backend automatic.
