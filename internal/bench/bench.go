@@ -40,6 +40,8 @@ type Result struct {
 	TotalTokens        int    `json:"total_tokens,omitempty"`
 	Error              string `json:"error,omitempty"`
 	FirstContentSample string `json:"first_content_sample,omitempty"`
+	ContentSample      string `json:"content_sample,omitempty"`
+	ReasoningSample    string `json:"reasoning_sample,omitempty"`
 }
 
 type Options struct {
@@ -62,7 +64,8 @@ type streamUsage struct {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *streamUsage `json:"usage"`
@@ -176,11 +179,13 @@ func RunCase(ctx context.Context, opts Options, benchCase Case) Result {
 		return result
 	}
 
-	usage, firstSample, bytesRead, firstEvent, err := ObserveSSE(resp.Body, started)
+	usage, firstSample, contentSample, reasoningSample, bytesRead, firstEvent, err := ObserveSSE(resp.Body, started)
 	result.DurationMS = time.Since(started).Milliseconds()
 	result.ResponseBytes = bytesRead
 	result.FirstEventMS = firstEvent
 	result.FirstContentSample = firstSample
+	result.ContentSample = contentSample
+	result.ReasoningSample = reasoningSample
 	if usage != nil {
 		result.PromptTokens = usage.PromptTokens
 		result.CompletionTokens = usage.CompletionTokens
@@ -192,12 +197,14 @@ func RunCase(ctx context.Context, opts Options, benchCase Case) Result {
 	return result
 }
 
-func ObserveSSE(r io.Reader, started time.Time) (*streamUsage, string, int64, int64, error) {
+func ObserveSSE(r io.Reader, started time.Time) (*streamUsage, string, string, string, int64, int64, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var usage *streamUsage
 	var firstSample string
+	var content strings.Builder
+	var reasoning strings.Builder
 	firstEventMS := int64(-1)
 	var bytesRead int64
 
@@ -217,7 +224,7 @@ func ObserveSSE(r io.Reader, started time.Time) (*streamUsage, string, int64, in
 
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return usage, firstSample, bytesRead, firstEventMS, fmt.Errorf("decode stream chunk: %w", err)
+			return usage, firstSample, truncate(content.String(), 4000), truncate(reasoning.String(), 4000), bytesRead, firstEventMS, fmt.Errorf("decode stream chunk: %w", err)
 		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
@@ -230,11 +237,19 @@ func ObserveSSE(r io.Reader, started time.Time) (*streamUsage, string, int64, in
 				}
 			}
 		}
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" && content.Len() < 4000 {
+				content.WriteString(choice.Delta.Content)
+			}
+			if choice.Delta.ReasoningContent != "" && reasoning.Len() < 4000 {
+				reasoning.WriteString(choice.Delta.ReasoningContent)
+			}
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		return usage, firstSample, bytesRead, firstEventMS, err
+		return usage, firstSample, truncate(content.String(), 4000), truncate(reasoning.String(), 4000), bytesRead, firstEventMS, err
 	}
-	return usage, firstSample, bytesRead, firstEventMS, nil
+	return usage, firstSample, truncate(content.String(), 4000), truncate(reasoning.String(), 4000), bytesRead, firstEventMS, nil
 }
 
 func requestBody(model string, maxTokens int, benchCase Case) ([]byte, error) {
