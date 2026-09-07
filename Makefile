@@ -137,9 +137,11 @@ package: build ## Build a Linux/macOS tarball package
 	mkdir -p "$(DIST_DIR)/$(PACKAGE_NAME)/configs" \
 		"$(DIST_DIR)/$(PACKAGE_NAME)/docs" \
 		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/systemd" \
-		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux"
+		"$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux" \
+		"$(DIST_DIR)/$(PACKAGE_NAME)/test/bench"
 	cp configs/router.example.yaml "$(DIST_DIR)/$(PACKAGE_NAME)/configs/"
 	cp docs/architecture.md docs/benchmarking.md docs/packaging.md docs/roadmap.md "$(DIST_DIR)/$(PACKAGE_NAME)/docs/"
+	cp test/bench/*.json "$(DIST_DIR)/$(PACKAGE_NAME)/test/bench/"
 	cp packaging/systemd/devrail-router.service "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/systemd/"
 	cp packaging/linux/install.sh "$(DIST_DIR)/$(PACKAGE_NAME)/packaging/linux/"
 	chmod 0755 "$(DIST_DIR)/$(PACKAGE_NAME)/devrail-router" \
@@ -161,7 +163,9 @@ package-smoke: package ## Build and smoke-test the tarball package
 		echo "skipping binary execution for cross-built package $(GOOS)/$(GOARCH) on $$host_goos/$$host_goarch"; \
 	fi; \
 	bash -n "$$tmp_dir/$(PACKAGE_NAME)/packaging/linux/install.sh"; \
-	test -f "$$tmp_dir/$(PACKAGE_NAME)/packaging/systemd/devrail-router.service"
+	test -f "$$tmp_dir/$(PACKAGE_NAME)/packaging/systemd/devrail-router.service"; \
+	test -f "$$tmp_dir/$(PACKAGE_NAME)/test/bench/local-coder.cases.json"; \
+	test -f "$$tmp_dir/$(PACKAGE_NAME)/test/bench/hard-thinking.cases.json"
 
 release-artifacts: ## Build versioned release tarballs and SHA256SUMS
 	@rm -rf "$(DIST_DIR)/release"
