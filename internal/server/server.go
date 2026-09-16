@@ -88,6 +88,8 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		OwnedBy       string `json:"owned_by"`
 		Name          string `json:"name,omitempty"`
 		ContextWindow int    `json:"context_window,omitempty"`
+		MaxOutput     int    `json:"max_output_tokens,omitempty"`
+		ToolCall      bool   `json:"tool_call,omitempty"`
 		TargetModel   string `json:"target_model,omitempty"`
 	}
 
@@ -99,6 +101,8 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 			OwnedBy:       "devrail-router",
 			Name:          model.Name,
 			ContextWindow: model.ContextWindow,
+			MaxOutput:     model.MaxOutputTokens,
+			ToolCall:      model.ToolCalls,
 			TargetModel:   model.TargetModel,
 		})
 	}
@@ -147,12 +151,19 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err = rewriteModel(body, model.TargetModel)
+	targetModel, routeRule := selectTargetModel(body, model)
+	targetMaxOutputTokens := 0
+	if targetAlias, ok := s.cfg.Model(targetModel); ok {
+		targetMaxOutputTokens = targetAlias.MaxOutputTokens
+	}
+	body, err = rewriteModel(body, targetModel, targetMaxOutputTokens)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
 		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusBadRequest, time.Now()))
 		return
 	}
+	routedModel := model
+	routedModel.TargetModel = targetModel
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
@@ -175,7 +186,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		setBackendAuth(req, backend)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		instrumentBackendResponse(resp, started, waited, model, backend, requestID, s.metrics)
+		instrumentBackendResponse(resp, started, waited, routedModel, backend, requestID, s.metrics)
 		return nil
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -185,16 +196,17 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 			"path", req.URL.Path,
 			"request_id", requestID,
 			"alias", model.ID,
-			"target_model", model.TargetModel,
+			"target_model", targetModel,
+			"route_rule", routeRule,
 			"backend", backend.ID,
 			"duration_ms", time.Since(started).Milliseconds(),
 			"error", proxyErr,
 		)
-		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusBadGateway, started))
+		s.metrics.record(requestMetricsFromModel(routedModel, backend, http.StatusBadGateway, started))
 		writeOpenAIError(rw, http.StatusBadGateway, "backend request failed", "devrail_backend_error", "backend_request_failed")
 	}
 
-	slog.Info("routing request", "request_id", requestID, "alias", model.ID, "target_model", model.TargetModel, "backend", backend.ID)
+	slog.Info("routing request", "request_id", requestID, "alias", model.ID, "target_model", targetModel, "route_rule", routeRule, "backend", backend.ID)
 	proxy.ServeHTTP(w, r)
 }
 
@@ -863,19 +875,140 @@ func requestModel(r *http.Request) (string, []byte, error) {
 	return model, body, nil
 }
 
-func rewriteModel(body []byte, targetModel string) ([]byte, error) {
+type routingFeatures struct {
+	PromptChars       int
+	Text              string
+	RequestedMaxToken int
+}
+
+func selectTargetModel(body []byte, model config.ModelConfig) (string, string) {
+	if len(model.Routing.Rules) == 0 {
+		return model.TargetModel, "default"
+	}
+
+	features := extractRoutingFeatures(body)
+	for _, rule := range model.Routing.Rules {
+		if routingRuleMatches(rule, features) {
+			if rule.ID != "" {
+				return rule.TargetModel, rule.ID
+			}
+			return rule.TargetModel, rule.TargetModel
+		}
+	}
+
+	return model.TargetModel, "default"
+}
+
+func extractRoutingFeatures(body []byte) routingFeatures {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return routingFeatures{}
+	}
+
+	text := requestText(payload)
+	return routingFeatures{
+		PromptChars:       len(text),
+		Text:              strings.ToLower(text),
+		RequestedMaxToken: requestMaxTokens(payload),
+	}
+}
+
+func routingRuleMatches(rule config.RoutingRuleConfig, features routingFeatures) bool {
+	if rule.MinPromptChars > 0 && features.PromptChars < rule.MinPromptChars {
+		return false
+	}
+	if rule.MaxPromptChars > 0 && features.PromptChars > rule.MaxPromptChars {
+		return false
+	}
+	if rule.MinOutputTokens > 0 && features.RequestedMaxToken < rule.MinOutputTokens {
+		return false
+	}
+	if rule.MaxOutputTokens > 0 && features.RequestedMaxToken > 0 && features.RequestedMaxToken > rule.MaxOutputTokens {
+		return false
+	}
+	if len(rule.AnyKeywords) > 0 {
+		for _, keyword := range rule.AnyKeywords {
+			if strings.Contains(features.Text, strings.ToLower(strings.TrimSpace(keyword))) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return true
+}
+
+func requestText(payload map[string]any) string {
+	var builder strings.Builder
+	appendTextValue(&builder, payload["messages"])
+	appendTextValue(&builder, payload["input"])
+	appendTextValue(&builder, payload["prompt"])
+	return builder.String()
+}
+
+func appendTextValue(builder *strings.Builder, value any) {
+	switch typed := value.(type) {
+	case string:
+		builder.WriteString(typed)
+		builder.WriteByte('\n')
+	case []any:
+		for _, item := range typed {
+			appendTextValue(builder, item)
+		}
+	case map[string]any:
+		for _, key := range []string{"role", "content", "text", "input_text", "prompt"} {
+			appendTextValue(builder, typed[key])
+		}
+	}
+}
+
+func requestMaxTokens(payload map[string]any) int {
+	for _, key := range []string{"max_completion_tokens", "max_tokens"} {
+		if value, ok := numericJSONValue(payload[key]); ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func numericJSONValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func rewriteModel(body []byte, targetModel string, maxOutputTokens int) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("parse request body: %w", err)
 	}
 
 	payload["model"] = targetModel
+	clampRequestMaxTokens(payload, maxOutputTokens)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
 	}
 
 	return body, nil
+}
+
+func clampRequestMaxTokens(payload map[string]any, maxOutputTokens int) {
+	if maxOutputTokens <= 0 {
+		return
+	}
+	for _, key := range []string{"max_completion_tokens", "max_tokens"} {
+		value, ok := numericJSONValue(payload[key])
+		if !ok || value <= maxOutputTokens {
+			continue
+		}
+		payload[key] = maxOutputTokens
+	}
 }
 
 func setBackendAuth(req *http.Request, backend config.BackendConfig) {

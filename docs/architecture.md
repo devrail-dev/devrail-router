@@ -36,8 +36,34 @@ The first router is deliberately simple:
 - The router rewrites the request to the configured backend model.
 - The backend handles inference.
 
-Future routing can add deterministic policy, queueing, health-aware selection,
-RouteLLM-style strong/weak model routing, and second-pass review workflows.
+Model aliases can also use deterministic request routing rules. The alias still
+has a default `target_model`, but ordered rules can choose a different target
+from cheap request metadata before the request is proxied:
+
+```yaml
+models:
+  - id: local-coder-auto
+    backend: lmstudio
+    target_model: qwen3-coder-30b-a3b-instruct
+    routing:
+      rules:
+        - id: large-prompt
+          target_model: qwen/qwen3.6-35b-a3b
+          min_prompt_chars: 12000
+        - id: hard-work-keywords
+          target_model: qwen/qwen3.6-35b-a3b
+          any_keywords:
+            - architecture
+            - migration
+            - refactor
+            - security
+```
+
+Rules are evaluated in order. A rule matches only when all configured numeric
+conditions pass; `any_keywords` is an OR condition across the lower-cased
+request text. If no rule matches, the alias uses its default `target_model`.
+Future routing can add health-aware selection, RouteLLM-style strong/weak model
+routing, and second-pass review workflows.
 
 ## Request Limits
 

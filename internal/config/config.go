@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,7 @@ type ModelConfig struct {
 	MaxQueueSize          int    `yaml:"max_queue_size"`
 	QueueTimeout          string `yaml:"queue_timeout"`
 	Ensure                EnsureConfig
+	Routing               RoutingConfig `yaml:"routing"`
 }
 
 type BackendConfig struct {
@@ -47,6 +49,20 @@ type EnsureConfig struct {
 	Mode    string      `yaml:"mode"`
 	Command CommandArgs `yaml:"command"`
 	Timeout string      `yaml:"timeout"`
+}
+
+type RoutingConfig struct {
+	Rules []RoutingRuleConfig `yaml:"rules"`
+}
+
+type RoutingRuleConfig struct {
+	ID              string   `yaml:"id"`
+	TargetModel     string   `yaml:"target_model"`
+	MinPromptChars  int      `yaml:"min_prompt_chars"`
+	MaxPromptChars  int      `yaml:"max_prompt_chars"`
+	MinOutputTokens int      `yaml:"min_output_tokens"`
+	MaxOutputTokens int      `yaml:"max_output_tokens"`
+	AnyKeywords     []string `yaml:"any_keywords"`
 }
 
 type CommandArgs []string
@@ -152,10 +168,54 @@ func (cfg Config) Validate() error {
 		if err := model.Ensure.Validate(); err != nil {
 			return fmt.Errorf("model %q ensure is invalid: %w", model.ID, err)
 		}
+		if err := model.Routing.Validate(); err != nil {
+			return fmt.Errorf("model %q routing is invalid: %w", model.ID, err)
+		}
 		if _, ok := models[model.ID]; ok {
 			return fmt.Errorf("model %q is duplicated", model.ID)
 		}
 		models[model.ID] = struct{}{}
+	}
+
+	return nil
+}
+
+func (routing RoutingConfig) Validate() error {
+	for index, rule := range routing.Rules {
+		if rule.TargetModel == "" {
+			return fmt.Errorf("rule %d target_model is required", index)
+		}
+		if rule.MinPromptChars < 0 {
+			return fmt.Errorf("rule %d min_prompt_chars must be non-negative", index)
+		}
+		if rule.MaxPromptChars < 0 {
+			return fmt.Errorf("rule %d max_prompt_chars must be non-negative", index)
+		}
+		if rule.MinPromptChars > 0 && rule.MaxPromptChars > 0 && rule.MinPromptChars > rule.MaxPromptChars {
+			return fmt.Errorf("rule %d min_prompt_chars must be less than or equal to max_prompt_chars", index)
+		}
+		if rule.MinOutputTokens < 0 {
+			return fmt.Errorf("rule %d min_output_tokens must be non-negative", index)
+		}
+		if rule.MaxOutputTokens < 0 {
+			return fmt.Errorf("rule %d max_output_tokens must be non-negative", index)
+		}
+		if rule.MinOutputTokens > 0 && rule.MaxOutputTokens > 0 && rule.MinOutputTokens > rule.MaxOutputTokens {
+			return fmt.Errorf("rule %d min_output_tokens must be less than or equal to max_output_tokens", index)
+		}
+		hasCondition := rule.MinPromptChars > 0 ||
+			rule.MaxPromptChars > 0 ||
+			rule.MinOutputTokens > 0 ||
+			rule.MaxOutputTokens > 0 ||
+			len(rule.AnyKeywords) > 0
+		if !hasCondition {
+			return fmt.Errorf("rule %d must define at least one condition", index)
+		}
+		for keywordIndex, keyword := range rule.AnyKeywords {
+			if strings.TrimSpace(keyword) == "" {
+				return fmt.Errorf("rule %d any_keywords[%d] must not be empty", index, keywordIndex)
+			}
+		}
 	}
 
 	return nil
