@@ -52,7 +52,8 @@ type EnsureConfig struct {
 }
 
 type RoutingConfig struct {
-	Rules []RoutingRuleConfig `yaml:"rules"`
+	Rules      []RoutingRuleConfig     `yaml:"rules"`
+	Classifier RoutingClassifierConfig `yaml:"classifier"`
 }
 
 type RoutingRuleConfig struct {
@@ -63,6 +64,15 @@ type RoutingRuleConfig struct {
 	MinOutputTokens int      `yaml:"min_output_tokens"`
 	MaxOutputTokens int      `yaml:"max_output_tokens"`
 	AnyKeywords     []string `yaml:"any_keywords"`
+}
+
+type RoutingClassifierConfig struct {
+	Backend      string   `yaml:"backend"`
+	Model        string   `yaml:"model"`
+	TargetModels []string `yaml:"target_models"`
+	SystemPrompt string   `yaml:"system_prompt"`
+	Timeout      string   `yaml:"timeout"`
+	MaxTokens    int      `yaml:"max_tokens"`
 }
 
 type CommandArgs []string
@@ -171,6 +181,11 @@ func (cfg Config) Validate() error {
 		if err := model.Routing.Validate(); err != nil {
 			return fmt.Errorf("model %q routing is invalid: %w", model.ID, err)
 		}
+		if model.Routing.Classifier.Enabled() {
+			if _, ok := backends[model.Routing.Classifier.Backend]; !ok {
+				return fmt.Errorf("model %q routing classifier references unknown backend %q", model.ID, model.Routing.Classifier.Backend)
+			}
+		}
 		if _, ok := models[model.ID]; ok {
 			return fmt.Errorf("model %q is duplicated", model.ID)
 		}
@@ -218,7 +233,56 @@ func (routing RoutingConfig) Validate() error {
 		}
 	}
 
+	if err := routing.Classifier.Validate(); err != nil {
+		return fmt.Errorf("classifier is invalid: %w", err)
+	}
+
 	return nil
+}
+
+func (classifier RoutingClassifierConfig) Validate() error {
+	if classifier.Backend == "" && classifier.Model == "" && len(classifier.TargetModels) == 0 && classifier.SystemPrompt == "" && classifier.Timeout == "" && classifier.MaxTokens == 0 {
+		return nil
+	}
+	if classifier.Backend == "" {
+		return errors.New("backend is required")
+	}
+	if classifier.Model == "" {
+		return errors.New("model is required")
+	}
+	if len(classifier.TargetModels) == 0 {
+		return errors.New("target_models is required")
+	}
+	for index, target := range classifier.TargetModels {
+		if strings.TrimSpace(target) == "" {
+			return fmt.Errorf("target_models[%d] must not be empty", index)
+		}
+	}
+	if classifier.MaxTokens < 0 {
+		return errors.New("max_tokens must be non-negative")
+	}
+	_, err := classifier.TimeoutDuration()
+	return err
+}
+
+func (classifier RoutingClassifierConfig) Enabled() bool {
+	return classifier.Backend != "" || classifier.Model != "" || len(classifier.TargetModels) > 0 || classifier.SystemPrompt != "" || classifier.Timeout != "" || classifier.MaxTokens != 0
+}
+
+func (classifier RoutingClassifierConfig) TimeoutDuration() (time.Duration, error) {
+	if classifier.Timeout == "" {
+		return 15 * time.Second, nil
+	}
+
+	duration, err := time.ParseDuration(classifier.Timeout)
+	if err != nil {
+		return 0, err
+	}
+	if duration <= 0 {
+		return 0, errors.New("duration must be positive")
+	}
+
+	return duration, nil
 }
 
 func (cfg Config) Model(id string) (ModelConfig, bool) {

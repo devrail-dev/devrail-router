@@ -136,12 +136,14 @@ models:
         - id: large-prompt
           target_model: qwen/qwen3.6-35b-a3b
           min_prompt_chars: 12000
-        - id: hard-work-keywords
-          target_model: qwen/qwen3.6-35b-a3b
-          any_keywords:
-            - architecture
-            - refactor
-            - security
+      classifier:
+        backend: lmstudio
+        model: qwen3-coder-30b-a3b-instruct
+        target_models:
+          - qwen3-coder-30b-a3b-instruct
+          - qwen/qwen3.6-35b-a3b
+        timeout: 15s
+        max_tokens: 64
     ensure:
       mode: command
       command:
