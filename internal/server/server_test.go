@@ -218,6 +218,157 @@ func TestRoutingRuleFallsBackToDefaultTarget(t *testing.T) {
 	}
 }
 
+func TestRoutingClassifierSelectsTarget(t *testing.T) {
+	t.Parallel()
+
+	var classifierModel string
+	classifier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode classifier request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		classifierModel = payload.Model
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": `{"target_model":"deep-model"}`,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(classifier.Close)
+
+	var backendModel string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		backendModel = payload.Model
+		writeJSON(w, http.StatusOK, map[string]string{"model": payload.Model})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv, err := New(config.Config{
+		Server: config.ServerConfig{Address: "127.0.0.1:0"},
+		Models: []config.ModelConfig{{
+			ID:          "local-coder-auto",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: config.RoutingConfig{
+				Classifier: config.RoutingClassifierConfig{
+					Backend:      "classifier",
+					Model:        "classifier-model",
+					TargetModels: []string{"fast-model", "deep-model"},
+				},
+			},
+		}},
+		Backends: []config.BackendConfig{
+			{ID: "lmstudio", BaseURL: backend.URL},
+			{ID: "classifier", BaseURL: classifier.URL},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder-auto","messages":[{"role":"user","content":"plan a tricky migration"}]}`),
+	)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if classifierModel != "classifier-model" {
+		t.Fatalf("unexpected classifier model: %q", classifierModel)
+	}
+	if backendModel != "deep-model" {
+		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+}
+
+func TestRoutingClassifierFallsBackToDefaultTarget(t *testing.T) {
+	t.Parallel()
+
+	classifier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": `{"target_model":"unknown-model"}`,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(classifier.Close)
+
+	var backendModel string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		backendModel = payload.Model
+		writeJSON(w, http.StatusOK, map[string]string{"model": payload.Model})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv, err := New(config.Config{
+		Server: config.ServerConfig{Address: "127.0.0.1:0"},
+		Models: []config.ModelConfig{{
+			ID:          "local-coder-auto",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: config.RoutingConfig{
+				Classifier: config.RoutingClassifierConfig{
+					Backend:      "classifier",
+					Model:        "classifier-model",
+					TargetModels: []string{"fast-model", "deep-model"},
+				},
+			},
+		}},
+		Backends: []config.BackendConfig{
+			{ID: "lmstudio", BaseURL: backend.URL},
+			{ID: "classifier", BaseURL: classifier.URL},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder-auto","messages":[{"role":"user","content":"say ok"}]}`),
+	)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if backendModel != "fast-model" {
+		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+}
+
 func TestRewriteModelClampsOversizedTargetAliasOutput(t *testing.T) {
 	t.Parallel()
 

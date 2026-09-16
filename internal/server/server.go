@@ -151,7 +151,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetModel, routeRule := selectTargetModel(body, model)
+	targetModel, routeRule := s.selectTargetModel(r.Context(), body, model, requestID)
 	targetMaxOutputTokens := 0
 	if targetAlias, ok := s.cfg.Model(targetModel); ok {
 		targetMaxOutputTokens = targetAlias.MaxOutputTokens
@@ -881,11 +881,7 @@ type routingFeatures struct {
 	RequestedMaxToken int
 }
 
-func selectTargetModel(body []byte, model config.ModelConfig) (string, string) {
-	if len(model.Routing.Rules) == 0 {
-		return model.TargetModel, "default"
-	}
-
+func (s *Server) selectTargetModel(ctx context.Context, body []byte, model config.ModelConfig, requestID string) (string, string) {
 	features := extractRoutingFeatures(body)
 	for _, rule := range model.Routing.Rules {
 		if routingRuleMatches(rule, features) {
@@ -896,7 +892,87 @@ func selectTargetModel(body []byte, model config.ModelConfig) (string, string) {
 		}
 	}
 
+	if model.Routing.Classifier.Enabled() {
+		target, ok := s.classifyTargetModel(ctx, model, features, requestID)
+		if ok {
+			return target, "classifier"
+		}
+	}
+
 	return model.TargetModel, "default"
+}
+
+func (s *Server) classifyTargetModel(ctx context.Context, model config.ModelConfig, features routingFeatures, requestID string) (string, bool) {
+	classifier := model.Routing.Classifier
+	backend, ok := s.cfg.Backend(classifier.Backend)
+	if !ok {
+		slog.Warn("routing classifier backend is missing", "request_id", requestID, "alias", model.ID, "backend", classifier.Backend)
+		return "", false
+	}
+
+	timeout, err := classifier.TimeoutDuration()
+	if err != nil {
+		slog.Warn("routing classifier timeout is invalid", "request_id", requestID, "alias", model.ID, "error", err)
+		return "", false
+	}
+	classifierCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	requestPayload := map[string]any{
+		"model":       classifier.Model,
+		"messages":    classifierMessages(classifier, features),
+		"temperature": 0,
+		"stream":      false,
+		"max_tokens":  classifierMaxTokens(classifier),
+	}
+	requestBody, err := json.Marshal(requestPayload)
+	if err != nil {
+		slog.Warn("routing classifier request could not be encoded", "request_id", requestID, "alias", model.ID, "error", err)
+		return "", false
+	}
+
+	endpoint, err := backendChatCompletionsURL(backend)
+	if err != nil {
+		slog.Warn("routing classifier backend URL is invalid", "request_id", requestID, "alias", model.ID, "backend", backend.ID, "error", err)
+		return "", false
+	}
+
+	req, err := http.NewRequestWithContext(classifierCtx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		slog.Warn("routing classifier request could not be created", "request_id", requestID, "alias", model.ID, "error", err)
+		return "", false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", requestID)
+	setBackendAuth(req, backend)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Warn("routing classifier request failed", "request_id", requestID, "alias", model.ID, "error", err)
+		return "", false
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		slog.Warn("routing classifier response could not be read", "request_id", requestID, "alias", model.ID, "status", resp.StatusCode, "error", err)
+		return "", false
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Warn("routing classifier returned non-success status", "request_id", requestID, "alias", model.ID, "status", resp.StatusCode, "body", trimForLog(string(responseBody), 2048))
+		return "", false
+	}
+
+	target, ok := classifierTargetFromResponse(responseBody, classifier.TargetModels)
+	if !ok {
+		slog.Warn("routing classifier returned no allowed target", "request_id", requestID, "alias", model.ID, "allowed_targets", strings.Join(classifier.TargetModels, ","), "body", trimForLog(string(responseBody), 2048))
+		return "", false
+	}
+
+	slog.Info("routing classifier selected target", "request_id", requestID, "alias", model.ID, "target_model", target)
+	return target, true
 }
 
 func extractRoutingFeatures(body []byte) routingFeatures {
@@ -980,6 +1056,116 @@ func numericJSONValue(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func classifierMessages(classifier config.RoutingClassifierConfig, features routingFeatures) []map[string]string {
+	systemPrompt := strings.TrimSpace(classifier.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = defaultClassifierSystemPrompt(classifier.TargetModels)
+	}
+
+	return []map[string]string{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": classifierUserPrompt(features, classifier.TargetModels)},
+	}
+}
+
+func defaultClassifierSystemPrompt(targets []string) string {
+	return "You route coding-agent requests to the cheapest adequate model. Return only JSON with target_model set to one of: " + strings.Join(targets, ", ") + ". Choose the stronger model for architecture, debugging, security, migrations, production risk, broad refactors, ambiguous planning, long-context synthesis, or high requested output. Choose the faster model for routine edits, short questions, status checks, formatting, simple commands, and low-risk local changes."
+}
+
+func classifierUserPrompt(features routingFeatures, targets []string) string {
+	text := features.Text
+	if len(text) > 6000 {
+		head := text[:3000]
+		tail := text[len(text)-3000:]
+		text = head + "\n...[middle omitted]...\n" + tail
+	}
+
+	return fmt.Sprintf(
+		"/no_think\nAllowed targets: %s\nPrompt chars: %d\nRequested max output tokens: %d\nRequest text:\n%s\n\nReturn only: {\"target_model\":\"<one allowed target>\"}",
+		strings.Join(targets, ", "),
+		features.PromptChars,
+		features.RequestedMaxToken,
+		text,
+	)
+}
+
+func classifierMaxTokens(classifier config.RoutingClassifierConfig) int {
+	if classifier.MaxTokens > 0 {
+		return classifier.MaxTokens
+	}
+	return 64
+}
+
+func backendChatCompletionsURL(backend config.BackendConfig) (string, error) {
+	parsed, err := url.Parse(backend.BaseURL)
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = joinOpenAIPath(parsed.Path, "/v1/chat/completions")
+	return parsed.String(), nil
+}
+
+func classifierTargetFromResponse(body []byte, allowed []string) (string, bool) {
+	text := classifierResponseText(body)
+	if target, ok := classifierTargetFromText(text, allowed); ok {
+		return target, true
+	}
+	return classifierTargetFromText(string(body), allowed)
+}
+
+func classifierResponseText(body []byte) string {
+	var payload struct {
+		Choices []struct {
+			Message map[string]any `json:"message"`
+			Text    string         `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Choices) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	for _, choice := range payload.Choices {
+		builder.WriteString(choice.Text)
+		builder.WriteByte('\n')
+		for _, key := range []string{"content", "reasoning_content"} {
+			if value, ok := choice.Message[key].(string); ok {
+				builder.WriteString(value)
+				builder.WriteByte('\n')
+			}
+		}
+	}
+	return builder.String()
+}
+
+func classifierTargetFromText(text string, allowed []string) (string, bool) {
+	var payload struct {
+		TargetModel string `json:"target_model"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &payload); err == nil {
+		for _, target := range allowed {
+			if payload.TargetModel == target {
+				return target, true
+			}
+		}
+	}
+
+	for _, target := range allowed {
+		if strings.Contains(text, target) {
+			return target, true
+		}
+	}
+	return "", false
+}
+
+func trimForLog(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "...[truncated]"
 }
 
 func rewriteModel(body []byte, targetModel string, maxOutputTokens int) ([]byte, error) {
