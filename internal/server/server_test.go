@@ -124,6 +124,123 @@ func TestRequestIDHeaderIsPropagated(t *testing.T) {
 	}
 }
 
+func TestRoutingRuleSelectsTargetByPromptSize(t *testing.T) {
+	t.Parallel()
+
+	var backendModel string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		backendModel = payload.Model
+		writeJSON(w, http.StatusOK, map[string]string{"model": payload.Model})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder-auto",
+		Backend:     "lmstudio",
+		TargetModel: "fast-model",
+		Routing: config.RoutingConfig{
+			Rules: []config.RoutingRuleConfig{{
+				ID:             "large-prompt",
+				TargetModel:    "deep-model",
+				MinPromptChars: 20,
+			}},
+		},
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder-auto","messages":[{"role":"user","content":"please analyze this larger prompt"}]}`),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if backendModel != "deep-model" {
+		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+}
+
+func TestRoutingRuleFallsBackToDefaultTarget(t *testing.T) {
+	t.Parallel()
+
+	var backendModel string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		backendModel = payload.Model
+		writeJSON(w, http.StatusOK, map[string]string{"model": payload.Model})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder-auto",
+		Backend:     "lmstudio",
+		TargetModel: "fast-model",
+		Routing: config.RoutingConfig{
+			Rules: []config.RoutingRuleConfig{{
+				ID:          "hard-work",
+				TargetModel: "deep-model",
+				AnyKeywords: []string{"architecture"},
+			}},
+		},
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder-auto","messages":[{"role":"user","content":"say ok"}]}`),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if backendModel != "fast-model" {
+		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+}
+
+func TestRewriteModelClampsOversizedTargetAliasOutput(t *testing.T) {
+	t.Parallel()
+
+	body, err := rewriteModel([]byte(`{"model":"local-coder-auto","messages":[],"max_tokens":32768}`), "local-coder-fast", 8192)
+	if err != nil {
+		t.Fatalf("rewrite model: %v", err)
+	}
+
+	var payload struct {
+		Model    string `json:"model"`
+		MaxToken int    `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode rewritten payload: %v", err)
+	}
+	if payload.Model != "local-coder-fast" {
+		t.Fatalf("unexpected model: %q", payload.Model)
+	}
+	if payload.MaxToken != 8192 {
+		t.Fatalf("unexpected max_tokens: %d", payload.MaxToken)
+	}
+}
+
 func TestJoinOpenAIPathAvoidsDuplicateVersionPrefix(t *testing.T) {
 	t.Parallel()
 

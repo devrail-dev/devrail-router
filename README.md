@@ -131,6 +131,17 @@ models:
     max_concurrent_requests: 2
     max_queue_size: 4
     queue_timeout: 30s
+    routing:
+      rules:
+        - id: large-prompt
+          target_model: qwen/qwen3.6-35b-a3b
+          min_prompt_chars: 12000
+        - id: hard-work-keywords
+          target_model: qwen/qwen3.6-35b-a3b
+          any_keywords:
+            - architecture
+            - refactor
+            - security
     ensure:
       mode: command
       command:

@@ -70,6 +70,63 @@ func TestValidateQueueSettings(t *testing.T) {
 	}
 }
 
+func TestValidateRoutingRules(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:          "local-coder",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: RoutingConfig{
+				Rules: []RoutingRuleConfig{{
+					ID:             "large-prompt",
+					TargetModel:    "deep-model",
+					MinPromptChars: 12000,
+					AnyKeywords:    []string{"refactor"},
+				}},
+			},
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+}
+
+func TestValidateRoutingRuleRequiresCondition(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:          "local-coder",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: RoutingConfig{
+				Rules: []RoutingRuleConfig{{
+					TargetModel: "deep-model",
+				}},
+			},
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "routing") {
+		t.Fatalf("expected routing error, got: %v", err)
+	}
+}
+
 func TestLoadEnsureCommandString(t *testing.T) {
 	t.Parallel()
 
