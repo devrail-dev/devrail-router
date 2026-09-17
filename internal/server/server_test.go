@@ -625,6 +625,20 @@ func TestEnsureCommandRunsBeforeProxy(t *testing.T) {
 	if status := serveChat(t, srv, "local-coder"); status != http.StatusOK {
 		t.Fatalf("unexpected status: %d", status)
 	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+
+	for _, want := range []string{
+		`devrail_router_ensure_duration_seconds_bucket{alias="local-coder",target_model="target-model",status="success",le="+Inf"} 1`,
+		`devrail_router_ensure_duration_seconds_count{alias="local-coder",target_model="target-model",status="success"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+		}
+	}
 }
 
 func TestEnsureCommandFailureReturnsServiceUnavailable(t *testing.T) {
@@ -653,6 +667,20 @@ func TestEnsureCommandFailureReturnsServiceUnavailable(t *testing.T) {
 	}
 	if backendCalls.Load() != 0 {
 		t.Fatalf("backend received %d calls, want 0", backendCalls.Load())
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+
+	for _, want := range []string{
+		`devrail_router_ensure_duration_seconds_bucket{alias="local-coder",target_model="target-model",status="failed",le="+Inf"} 1`,
+		`devrail_router_ensure_duration_seconds_count{alias="local-coder",target_model="target-model",status="failed"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+		}
 	}
 }
 

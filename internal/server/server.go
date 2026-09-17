@@ -291,7 +291,9 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 
 	command := []string(model.Ensure.Command)
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	started := time.Now()
 	output, err := cmd.CombinedOutput()
+	duration := time.Since(started)
 	outputText := strings.TrimSpace(string(output))
 	if len(outputText) > 2048 {
 		outputText = outputText[:2048] + "...[truncated]"
@@ -300,16 +302,20 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 		status := http.StatusServiceUnavailable
 		message := "model profile is not ready"
 		code := "ensure_failed"
+		ensureStatus := "failed"
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			message = "timed out ensuring model profile"
 			code = "ensure_timeout"
+			ensureStatus = "timeout"
 		}
 
+		s.metrics.recordEnsure(model, ensureStatus, duration)
 		slog.Warn(
 			"model ensure command failed",
 			"request_id", requestID,
 			"alias", model.ID,
 			"target_model", model.TargetModel,
+			"duration_ms", duration.Milliseconds(),
 			"error", err,
 			"output", outputText,
 		)
@@ -317,11 +323,13 @@ func (s *Server) ensureModelReadyWithCommand(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 
+	s.metrics.recordEnsure(model, "success", duration)
 	slog.Info(
 		"model ensure command completed",
 		"request_id", requestID,
 		"alias", model.ID,
 		"target_model", model.TargetModel,
+		"duration_ms", duration.Milliseconds(),
 		"output", outputText,
 	)
 	return true
@@ -582,6 +590,7 @@ type metricsRegistry struct {
 	requests          map[string]*metricSeries
 	durationSeconds   histogram
 	queueWaitSeconds  histogram
+	ensureSeconds     histogram
 	firstEventSeconds histogram
 	responseBytes     float64
 	promptTokens      float64
@@ -625,6 +634,10 @@ func newMetricsRegistry() *metricsRegistry {
 			Series:  make(map[string]*histogramSeries),
 		},
 		queueWaitSeconds: histogram{
+			Buckets: latencyBuckets,
+			Series:  make(map[string]*histogramSeries),
+		},
+		ensureSeconds: histogram{
 			Buckets: latencyBuckets,
 			Series:  make(map[string]*histogramSeries),
 		},
@@ -681,6 +694,22 @@ func (registry *metricsRegistry) record(metrics requestMetrics) {
 	registry.totalTokens += float64(metrics.TotalTokens)
 }
 
+func (registry *metricsRegistry) recordEnsure(model config.ModelConfig, status string, duration time.Duration) {
+	if registry == nil {
+		return
+	}
+
+	labels := metricLabels{
+		Alias:       model.ID,
+		TargetModel: model.TargetModel,
+		Status:      status,
+	}
+
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.ensureSeconds.observe(labels, duration.Seconds())
+}
+
 func (hist *histogram) observe(labels metricLabels, value float64) {
 	key := labels.key()
 	series := hist.Series[key]
@@ -714,6 +743,7 @@ func (registry *metricsRegistry) render() string {
 
 	writeHistogram(&builder, "devrail_router_request_duration_seconds", "End-to-end router request duration in seconds.", registry.durationSeconds)
 	writeHistogram(&builder, "devrail_router_queue_wait_seconds", "Time spent waiting for a model concurrency slot in seconds.", registry.queueWaitSeconds)
+	writeHistogram(&builder, "devrail_router_ensure_duration_seconds", "Time spent ensuring a model profile is ready before proxying.", registry.ensureSeconds)
 	writeHistogram(&builder, "devrail_router_first_event_latency_seconds", "Time to first Server-Sent Event for streamed upstream responses in seconds.", registry.firstEventSeconds)
 
 	writeMetricHelp(&builder, "devrail_router_response_bytes_total", "Total response body bytes proxied from upstream backends.")

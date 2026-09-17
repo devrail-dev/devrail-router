@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the backend sends OpenAI-compatible streamed usage chunks.
 - `/metrics` now exposes Prometheus-compatible request, queue, latency, byte,
   and token telemetry.
+- `/metrics` now exposes model ensure/profile-switch duration telemetry.
 
 ### Changed
 
