@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision is made.
 - `/metrics` now exposes `devrail_router_prompt_chars` buckets with request
   labels so prompt-size guardrail behavior can be tuned from real traffic.
+- `/metrics` now exposes `devrail_router_inflight_requests` so open streams
+  can be distinguished from completed or stalled client-side requests.
 - Opt-in command-backed model profile ensure hooks.
 - Roadmap for maturing DevRail Router from a single-backend gateway into an
   observable local inference control plane.

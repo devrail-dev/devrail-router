@@ -369,6 +369,7 @@ type responseTelemetry struct {
 	HasPromptChars   bool
 	Started          time.Time
 	metrics          *metricsRegistry
+	finishInFlight   func()
 }
 
 type telemetryReadCloser struct {
@@ -474,6 +475,9 @@ func (body *streamTelemetryReadCloser) log() {
 }
 
 func logTelemetry(telemetry *responseTelemetry) {
+	if telemetry.finishInFlight != nil {
+		defer telemetry.finishInFlight()
+	}
 	telemetry.metrics.record(requestMetrics{
 		Alias:            telemetry.Alias,
 		TargetModel:      telemetry.TargetModel,
@@ -545,6 +549,18 @@ func instrumentBackendResponse(
 
 	if isEventStreamResponse(resp) {
 		telemetry.Streaming = true
+		telemetry.finishInFlight = metrics.startInFlight(responseTelemetryLabels(*telemetry))
+		slog.Info(
+			"backend response started",
+			"request_id", requestID,
+			"alias", telemetry.Alias,
+			"target_model", telemetry.TargetModel,
+			"backend", telemetry.Backend,
+			"status", telemetry.Status,
+			"streaming", telemetry.Streaming,
+			"route_rule", telemetry.RouteRule,
+			"prompt_chars", telemetry.PromptChars,
+		)
 		resp.Body = &streamTelemetryReadCloser{body: resp.Body, telemetry: telemetry}
 		return
 	}
@@ -567,6 +583,18 @@ func instrumentBackendResponse(
 		}
 	}
 
+	telemetry.finishInFlight = metrics.startInFlight(responseTelemetryLabels(*telemetry))
+	slog.Info(
+		"backend response started",
+		"request_id", requestID,
+		"alias", telemetry.Alias,
+		"target_model", telemetry.TargetModel,
+		"backend", telemetry.Backend,
+		"status", telemetry.Status,
+		"streaming", telemetry.Streaming,
+		"route_rule", telemetry.RouteRule,
+		"prompt_chars", telemetry.PromptChars,
+	)
 	resp.Body = &telemetryReadCloser{body: resp.Body, telemetry: telemetry}
 }
 
@@ -621,6 +649,7 @@ type requestMetrics struct {
 type metricsRegistry struct {
 	mu                sync.Mutex
 	requests          map[string]*metricSeries
+	inFlight          map[string]*metricSeries
 	durationSeconds   histogram
 	queueWaitSeconds  histogram
 	ensureSeconds     histogram
@@ -665,6 +694,7 @@ func newMetricsRegistry() *metricsRegistry {
 	promptCharBuckets := []float64{1024, 4096, 8192, 16384, 32768, 65536, 80000, 131072, 262144, 524288, 1048576}
 	return &metricsRegistry{
 		requests: make(map[string]*metricSeries),
+		inFlight: make(map[string]*metricSeries),
 		durationSeconds: histogram{
 			Buckets: latencyBuckets,
 			Series:  make(map[string]*histogramSeries),
@@ -685,6 +715,28 @@ func newMetricsRegistry() *metricsRegistry {
 			Buckets: promptCharBuckets,
 			Series:  make(map[string]*histogramSeries),
 		},
+	}
+}
+
+func requestMetricsLabels(metrics requestMetrics) metricLabels {
+	return metricLabels{
+		Alias:       metrics.Alias,
+		Backend:     metrics.Backend,
+		TargetModel: metrics.TargetModel,
+		RouteRule:   metrics.RouteRule,
+		Status:      strconv.Itoa(metrics.Status),
+		Streaming:   strconv.FormatBool(metrics.Streaming),
+	}
+}
+
+func responseTelemetryLabels(telemetry responseTelemetry) metricLabels {
+	return metricLabels{
+		Alias:       telemetry.Alias,
+		Backend:     telemetry.Backend,
+		TargetModel: telemetry.TargetModel,
+		RouteRule:   telemetry.RouteRule,
+		Status:      strconv.Itoa(telemetry.Status),
+		Streaming:   strconv.FormatBool(telemetry.Streaming),
 	}
 }
 
@@ -711,14 +763,7 @@ func (registry *metricsRegistry) record(metrics requestMetrics) {
 		return
 	}
 
-	labels := metricLabels{
-		Alias:       metrics.Alias,
-		Backend:     metrics.Backend,
-		TargetModel: metrics.TargetModel,
-		RouteRule:   metrics.RouteRule,
-		Status:      strconv.Itoa(metrics.Status),
-		Streaming:   strconv.FormatBool(metrics.Streaming),
-	}
+	labels := requestMetricsLabels(metrics)
 	duration := time.Since(metrics.Started).Seconds()
 	if metrics.Started.IsZero() {
 		duration = 0
@@ -744,6 +789,33 @@ func (registry *metricsRegistry) record(metrics requestMetrics) {
 	registry.promptTokens += float64(metrics.PromptTokens)
 	registry.completionTokens += float64(metrics.CompletionTokens)
 	registry.totalTokens += float64(metrics.TotalTokens)
+}
+
+func (registry *metricsRegistry) startInFlight(labels metricLabels) func() {
+	if registry == nil {
+		return nil
+	}
+
+	registry.mu.Lock()
+	key := labels.key()
+	if registry.inFlight[key] == nil {
+		registry.inFlight[key] = &metricSeries{Labels: labels}
+	}
+	registry.inFlight[key].Value++
+	registry.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			registry.mu.Lock()
+			defer registry.mu.Unlock()
+			series := registry.inFlight[key]
+			if series == nil || series.Value <= 0 {
+				return
+			}
+			series.Value--
+		})
+	}
 }
 
 func (registry *metricsRegistry) recordEnsure(model config.ModelConfig, status string, duration time.Duration) {
@@ -791,6 +863,12 @@ func (registry *metricsRegistry) render() string {
 	writeMetricType(&builder, "devrail_router_requests_total", "counter")
 	for _, series := range sortedMetricSeries(registry.requests) {
 		writeMetricLine(&builder, "devrail_router_requests_total", series.Labels, series.Value)
+	}
+
+	writeMetricHelp(&builder, "devrail_router_inflight_requests", "Currently active proxied OpenAI-compatible requests with an upstream response.")
+	writeMetricType(&builder, "devrail_router_inflight_requests", "gauge")
+	for _, series := range sortedMetricSeries(registry.inFlight) {
+		writeMetricLine(&builder, "devrail_router_inflight_requests", series.Labels, series.Value)
 	}
 
 	writeHistogram(&builder, "devrail_router_request_duration_seconds", "End-to-end router request duration in seconds.", registry.durationSeconds)
