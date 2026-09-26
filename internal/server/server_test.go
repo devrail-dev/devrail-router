@@ -169,6 +169,15 @@ func TestRoutingRuleSelectsTargetByPromptSize(t *testing.T) {
 	if backendModel != "deep-model" {
 		t.Fatalf("unexpected backend model: %q", backendModel)
 	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+	want := `devrail_router_requests_total{alias="local-coder-auto",backend="lmstudio",target_model="deep-model",route_rule="large-prompt",status="200",streaming="false"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+	}
 }
 
 func TestRoutingRuleFallsBackToDefaultTarget(t *testing.T) {
@@ -297,6 +306,15 @@ func TestRoutingClassifierSelectsTarget(t *testing.T) {
 	}
 	if backendModel != "deep-model" {
 		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+	want := `devrail_router_requests_total{alias="local-coder-auto",backend="lmstudio",target_model="deep-model",route_rule="classifier",status="200",streaming="false"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
 	}
 }
 
@@ -448,6 +466,15 @@ func TestRoutingPreclassifierSelectsTargetBeforeClassifier(t *testing.T) {
 	}
 	if backendModel != "deep-model" {
 		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+	want := `devrail_router_requests_total{alias="local-coder-auto",backend="lmstudio",target_model="deep-model",route_rule="preclassifier",status="200",streaming="false"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
 	}
 }
 
@@ -981,8 +1008,8 @@ func TestMetricsEndpointExposesRequestTelemetry(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"# TYPE devrail_router_requests_total counter",
-		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="false"} 1`,
-		`devrail_router_request_duration_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="false",le="+Inf"} 1`,
+		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="false"} 1`,
+		`devrail_router_request_duration_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="false",le="+Inf"} 1`,
 		"devrail_router_prompt_tokens_total 9",
 		"devrail_router_completion_tokens_total 3",
 		"devrail_router_total_tokens_total 12",
@@ -1019,8 +1046,8 @@ func TestMetricsEndpointExposesStreamingFirstEventLatency(t *testing.T) {
 	body := metricsRec.Body.String()
 
 	for _, want := range []string{
-		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="true"} 1`,
-		`devrail_router_first_event_latency_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",status="200",streaming="true",le="+Inf"} 1`,
+		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="true"} 1`,
+		`devrail_router_first_event_latency_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="true",le="+Inf"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
