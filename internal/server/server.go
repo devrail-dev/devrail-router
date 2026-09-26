@@ -186,7 +186,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		setBackendAuth(req, backend)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		instrumentBackendResponse(resp, started, waited, routedModel, backend, requestID, s.metrics)
+		instrumentBackendResponse(resp, started, waited, routedModel, backend, requestID, routeRule, s.metrics)
 		return nil
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -202,7 +202,9 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 			"duration_ms", time.Since(started).Milliseconds(),
 			"error", proxyErr,
 		)
-		s.metrics.record(requestMetricsFromModel(routedModel, backend, http.StatusBadGateway, started))
+		metrics := requestMetricsFromModel(routedModel, backend, http.StatusBadGateway, started)
+		metrics.RouteRule = routeRule
+		s.metrics.record(metrics)
 		writeOpenAIError(rw, http.StatusBadGateway, "backend request failed", "devrail_backend_error", "backend_request_failed")
 	}
 
@@ -341,6 +343,7 @@ type responseTelemetry struct {
 	TargetModel      string
 	Backend          string
 	UpstreamModel    string
+	RouteRule        string
 	Status           int
 	Streaming        bool
 	FirstEvent       time.Time
@@ -460,6 +463,7 @@ func logTelemetry(telemetry *responseTelemetry) {
 		Alias:            telemetry.Alias,
 		TargetModel:      telemetry.TargetModel,
 		Backend:          telemetry.Backend,
+		RouteRule:        telemetry.RouteRule,
 		Status:           telemetry.Status,
 		Streaming:        telemetry.Streaming,
 		FirstEvent:       telemetry.FirstEvent,
@@ -495,10 +499,13 @@ func instrumentBackendResponse(
 	model config.ModelConfig,
 	backend config.BackendConfig,
 	requestID string,
+	routeRule string,
 	metrics *metricsRegistry,
 ) {
 	if resp.Body == nil {
-		metrics.record(requestMetricsFromModel(model, backend, resp.StatusCode, started))
+		requestMetrics := requestMetricsFromModel(model, backend, resp.StatusCode, started)
+		requestMetrics.RouteRule = routeRule
+		metrics.record(requestMetrics)
 		return
 	}
 
@@ -507,6 +514,7 @@ func instrumentBackendResponse(
 		Alias:       model.ID,
 		TargetModel: model.TargetModel,
 		Backend:     backend.ID,
+		RouteRule:   routeRule,
 		Status:      resp.StatusCode,
 		Started:     started,
 		QueueWait:   queueWait,
@@ -574,6 +582,7 @@ type requestMetrics struct {
 	Alias            string
 	TargetModel      string
 	Backend          string
+	RouteRule        string
 	Status           int
 	Streaming        bool
 	FirstEvent       time.Time
@@ -607,6 +616,7 @@ type metricLabels struct {
 	Alias       string
 	Backend     string
 	TargetModel string
+	RouteRule   string
 	Status      string
 	Streaming   string
 	Le          string
@@ -667,6 +677,7 @@ func (registry *metricsRegistry) record(metrics requestMetrics) {
 		Alias:       metrics.Alias,
 		Backend:     metrics.Backend,
 		TargetModel: metrics.TargetModel,
+		RouteRule:   metrics.RouteRule,
 		Status:      strconv.Itoa(metrics.Status),
 		Streaming:   strconv.FormatBool(metrics.Streaming),
 	}
@@ -823,7 +834,7 @@ func sortedHistogramSeries(series map[string]*histogramSeries) []*histogramSerie
 }
 
 func (labels metricLabels) key() string {
-	return labels.Alias + "\xff" + labels.Backend + "\xff" + labels.TargetModel + "\xff" + labels.Status + "\xff" + labels.Streaming
+	return labels.Alias + "\xff" + labels.Backend + "\xff" + labels.TargetModel + "\xff" + labels.RouteRule + "\xff" + labels.Status + "\xff" + labels.Streaming
 }
 
 func (labels metricLabels) with(name, value string) metricLabels {
@@ -844,6 +855,9 @@ func (labels metricLabels) prometheus() string {
 	}
 	if labels.TargetModel != "" {
 		parts = append(parts, `target_model="`+escapePrometheusLabel(labels.TargetModel)+`"`)
+	}
+	if labels.RouteRule != "" {
+		parts = append(parts, `route_rule="`+escapePrometheusLabel(labels.RouteRule)+`"`)
 	}
 	if labels.Status != "" {
 		parts = append(parts, `status="`+escapePrometheusLabel(labels.Status)+`"`)
