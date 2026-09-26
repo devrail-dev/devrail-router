@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Configurable keyword preclassifier for high-confidence route selection before
+  falling back to the LLM classifier.
+- Route-classifier benchmark corpus and runner for comparing guardrail,
+  keyword, and live OpenAI-compatible classifier policies.
 - Opt-in command-backed model profile ensure hooks.
 - Roadmap for maturing DevRail Router from a single-backend gateway into an
   observable local inference control plane.
