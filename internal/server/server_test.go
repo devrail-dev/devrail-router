@@ -1056,6 +1056,80 @@ func TestMetricsEndpointExposesStreamingFirstEventLatency(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointExposesInflightStreamingRequests(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"model\":\"target-model\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(started)
+		<-release
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:          "local-coder",
+		Backend:     "lmstudio",
+		TargetModel: "target-model",
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder","messages":[],"stream":true}`),
+	)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for backend stream to start")
+	}
+
+	wantInflight := `devrail_router_inflight_requests{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="true"} 1`
+	deadline := time.Now().Add(time.Second)
+	for {
+		metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		metricsRec := httptest.NewRecorder()
+		srv.ServeHTTP(metricsRec, metricsReq)
+		if strings.Contains(metricsRec.Body.String(), wantInflight) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected in-flight metric %s, got:\n%s", wantInflight, metricsRec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for router request to finish")
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+	for _, want := range []string{
+		`devrail_router_inflight_requests{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="true"} 0`,
+		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="true"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+		}
+	}
+}
+
 func TestBackendProxyErrorReturnsOpenAIError(t *testing.T) {
 	t.Parallel()
 
