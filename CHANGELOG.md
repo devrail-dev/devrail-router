@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword, and live OpenAI-compatible classifier policies.
 - Request metrics now include the selected `route_rule` label when a routing
   decision is made.
+- `/metrics` now exposes `devrail_router_prompt_chars` buckets with request
+  labels so prompt-size guardrail behavior can be tuned from real traffic.
 - Opt-in command-backed model profile ensure hooks.
 - Roadmap for maturing DevRail Router from a single-backend gateway into an
   observable local inference control plane.

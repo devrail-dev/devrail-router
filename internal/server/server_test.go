@@ -1010,6 +1010,7 @@ func TestMetricsEndpointExposesRequestTelemetry(t *testing.T) {
 		"# TYPE devrail_router_requests_total counter",
 		`devrail_router_requests_total{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="false"} 1`,
 		`devrail_router_request_duration_seconds_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="false",le="+Inf"} 1`,
+		`devrail_router_prompt_chars_bucket{alias="local-coder",backend="lmstudio",target_model="target-model",route_rule="default",status="200",streaming="false",le="+Inf"} 1`,
 		"devrail_router_prompt_tokens_total 9",
 		"devrail_router_completion_tokens_total 3",
 		"devrail_router_total_tokens_total 12",
