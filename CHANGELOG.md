@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falling back to the LLM classifier.
 - Route-classifier benchmark corpus and runner for comparing guardrail,
   keyword, and live OpenAI-compatible classifier policies.
+- Request metrics now include the selected `route_rule` label when a routing
+  decision is made.
 - Opt-in command-backed model profile ensure hooks.
 - Roadmap for maturing DevRail Router from a single-backend gateway into an
   observable local inference control plane.
