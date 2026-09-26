@@ -52,8 +52,9 @@ type EnsureConfig struct {
 }
 
 type RoutingConfig struct {
-	Rules      []RoutingRuleConfig     `yaml:"rules"`
-	Classifier RoutingClassifierConfig `yaml:"classifier"`
+	Rules         []RoutingRuleConfig        `yaml:"rules"`
+	Preclassifier RoutingPreclassifierConfig `yaml:"preclassifier"`
+	Classifier    RoutingClassifierConfig    `yaml:"classifier"`
 }
 
 type RoutingRuleConfig struct {
@@ -73,6 +74,18 @@ type RoutingClassifierConfig struct {
 	SystemPrompt string   `yaml:"system_prompt"`
 	Timeout      string   `yaml:"timeout"`
 	MaxTokens    int      `yaml:"max_tokens"`
+}
+
+type RoutingPreclassifierConfig struct {
+	Targets         []RoutingPreclassifierTargetConfig `yaml:"targets"`
+	MinConfidence   float64                            `yaml:"min_confidence"`
+	NegationPhrases []string                           `yaml:"negation_phrases"`
+}
+
+type RoutingPreclassifierTargetConfig struct {
+	TargetModel string   `yaml:"target_model"`
+	Keywords    []string `yaml:"keywords"`
+	Confidence  float64  `yaml:"confidence"`
 }
 
 type CommandArgs []string
@@ -236,8 +249,49 @@ func (routing RoutingConfig) Validate() error {
 	if err := routing.Classifier.Validate(); err != nil {
 		return fmt.Errorf("classifier is invalid: %w", err)
 	}
+	if err := routing.Preclassifier.Validate(); err != nil {
+		return fmt.Errorf("preclassifier is invalid: %w", err)
+	}
 
 	return nil
+}
+
+func (preclassifier RoutingPreclassifierConfig) Validate() error {
+	if !preclassifier.Enabled() {
+		return nil
+	}
+	if len(preclassifier.Targets) == 0 {
+		return errors.New("targets is required")
+	}
+	if preclassifier.MinConfidence < 0 || preclassifier.MinConfidence > 1 {
+		return errors.New("min_confidence must be between 0 and 1")
+	}
+	for phraseIndex, phrase := range preclassifier.NegationPhrases {
+		if strings.TrimSpace(phrase) == "" {
+			return fmt.Errorf("negation_phrases[%d] must not be empty", phraseIndex)
+		}
+	}
+	for index, target := range preclassifier.Targets {
+		if strings.TrimSpace(target.TargetModel) == "" {
+			return fmt.Errorf("targets[%d].target_model is required", index)
+		}
+		if len(target.Keywords) == 0 {
+			return fmt.Errorf("targets[%d].keywords is required", index)
+		}
+		if target.Confidence <= 0 || target.Confidence > 1 {
+			return fmt.Errorf("targets[%d].confidence must be greater than 0 and less than or equal to 1", index)
+		}
+		for keywordIndex, keyword := range target.Keywords {
+			if strings.TrimSpace(keyword) == "" {
+				return fmt.Errorf("targets[%d].keywords[%d] must not be empty", index, keywordIndex)
+			}
+		}
+	}
+	return nil
+}
+
+func (preclassifier RoutingPreclassifierConfig) Enabled() bool {
+	return len(preclassifier.Targets) > 0 || preclassifier.MinConfidence != 0 || len(preclassifier.NegationPhrases) > 0
 }
 
 func (classifier RoutingClassifierConfig) Validate() error {

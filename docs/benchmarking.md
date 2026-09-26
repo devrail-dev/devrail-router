@@ -103,3 +103,38 @@ go run ./cmd/devrail-router bench \
 The deep alias may spend early tokens on reasoning before emitting normal
 content, so use a larger token cap than a smoke test. Compare both timings and
 the `content_sample` field before making a slower backend automatic.
+
+## Routing Classifier Benchmarks
+
+Use the route-classifier benchmark to compare fast-vs-strong selection policies
+without sending full generation requests through the router:
+
+```sh
+python3 tools/route_classifier_bench.py \
+  --cases test/bench/router-routing.cases.json \
+  --candidates guardrails,keywords
+```
+
+Add `openai` to compare a live OpenAI-compatible classifier model:
+
+```sh
+python3 tools/route_classifier_bench.py \
+  --candidates guardrails,keywords,openai \
+  --openai-base-url http://llm-srv-01.mfsoho.linkridge.net:18080/v1 \
+  --openai-model local-coder-fast
+```
+
+The tool writes one JSON object per candidate/case to stdout and prints per
+candidate accuracy/timing summaries to stderr.
+
+Router selection order is:
+
+1. explicit routing rules, such as prompt-size and output-token guardrails
+2. optional keyword preclassifier for high-confidence cheap decisions
+3. optional OpenAI-compatible LLM classifier for ambiguous requests
+4. the model alias default target
+
+Use the benchmark corpus to tune the preclassifier keyword list before enabling
+it in deployed config. Negated phrases such as `no production` and
+`without security impact` should remain fall-through cases so they can reach the
+LLM classifier or default route.

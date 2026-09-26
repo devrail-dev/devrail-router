@@ -1,0 +1,104 @@
+[
+  {
+    "id": "small-git-cleanup",
+    "expected": "fast",
+    "prompt": "Clean up a stale local git branch, remove an unused temporary file, and summarize the diff. No production services are involved."
+  },
+  {
+    "id": "frontend-copy",
+    "expected": "fast",
+    "prompt": "Fix a button label and adjust spacing in a small React component, then run the focused unit test."
+  },
+  {
+    "id": "status-question",
+    "expected": "fast",
+    "prompt": "Check whether the local working tree is clean and tell me the current branch."
+  },
+  {
+    "id": "formatting-only",
+    "expected": "fast",
+    "prompt": "Run the formatter on the touched Go files and report whether anything changed."
+  },
+  {
+    "id": "small-doc-edit",
+    "expected": "fast",
+    "prompt": "Add one sentence to the README explaining how to run the local smoke test."
+  },
+  {
+    "id": "unit-test-fix",
+    "expected": "fast",
+    "prompt": "A focused unit test has a changed expected string after a copy edit. Update the assertion and run that one package test."
+  },
+  {
+    "id": "production-incident",
+    "expected": "strong",
+    "prompt": "Diagnose a production Kubernetes outage with database connection failures, identify likely rollback options, and propose the safest recovery sequence."
+  },
+  {
+    "id": "terraform-firewall",
+    "expected": "strong",
+    "prompt": "Update Terraform-managed OPNsense firewall policy for cross-site BGP, prove the plan scope, apply only the approved rules, and verify route exchange."
+  },
+  {
+    "id": "security-review",
+    "expected": "strong",
+    "prompt": "Review an authentication middleware change for token leakage, replay risk, and missing audit coverage before it ships."
+  },
+  {
+    "id": "database-migration",
+    "expected": "strong",
+    "prompt": "Design and implement a Postgres migration that backfills tenant entitlement state without downtime and with rollback instructions."
+  },
+  {
+    "id": "broad-refactor",
+    "expected": "strong",
+    "prompt": "Refactor the request routing layer across multiple packages while preserving streaming behavior, queue limits, metrics, and error responses."
+  },
+  {
+    "id": "root-cause-debug",
+    "expected": "strong",
+    "prompt": "Find the root cause of intermittent SSE stream truncation under concurrent load and propose a production-safe fix."
+  },
+  {
+    "id": "large-output-request",
+    "expected": "strong",
+    "max_tokens": 12000,
+    "prompt": "Generate a detailed implementation plan for a multi-service migration."
+  },
+  {
+    "id": "large-prompt-session",
+    "expected": "strong",
+    "repeat": 9000,
+    "prompt": "Existing session context includes many prior file reads, logs, and partial patches. Decide the safest next implementation step.\n"
+  },
+  {
+    "id": "ambiguous-architecture",
+    "expected": "strong",
+    "prompt": "Should we change the architecture so opencode can use one alias while the router dynamically chooses fast, strong, and deep backends?"
+  },
+  {
+    "id": "dependency-bump",
+    "expected": "fast",
+    "prompt": "Bump one dev-only lint dependency, run the lockfile update, and report the package test result."
+  },
+  {
+    "id": "billing-risk",
+    "expected": "strong",
+    "prompt": "Change billing entitlement enforcement so no-charge tenants bypass Stripe while paid tenants still require active subscriptions."
+  },
+  {
+    "id": "dns-change",
+    "expected": "strong",
+    "prompt": "Update public DNS and reverse proxy routing for a customer-facing application, then prove the deployed host and TLS route."
+  },
+  {
+    "id": "simple-command",
+    "expected": "fast",
+    "prompt": "Run date and tell me the current time."
+  },
+  {
+    "id": "concurrency-bug",
+    "expected": "strong",
+    "prompt": "Investigate a concurrency bug where queued model requests sometimes time out after an active request finishes."
+  }
+]

@@ -127,6 +127,70 @@ func TestValidateRoutingRuleRequiresCondition(t *testing.T) {
 	}
 }
 
+func TestValidateRoutingPreclassifier(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:          "local-coder",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: RoutingConfig{
+				Preclassifier: RoutingPreclassifierConfig{
+					MinConfidence: 0.8,
+					Targets: []RoutingPreclassifierTargetConfig{{
+						TargetModel: "deep-model",
+						Keywords:    []string{"production", "terraform"},
+						Confidence:  0.95,
+					}},
+				},
+			},
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+}
+
+func TestValidateRoutingPreclassifierRejectsInvalidConfidence(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:          "local-coder",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: RoutingConfig{
+				Preclassifier: RoutingPreclassifierConfig{
+					MinConfidence: 1.2,
+					Targets: []RoutingPreclassifierTargetConfig{{
+						TargetModel: "deep-model",
+						Keywords:    []string{"production"},
+						Confidence:  0.95,
+					}},
+				},
+			},
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "preclassifier") {
+		t.Fatalf("expected preclassifier error, got: %v", err)
+	}
+}
+
 func TestLoadEnsureCommandString(t *testing.T) {
 	t.Parallel()
 
