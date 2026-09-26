@@ -49,6 +49,18 @@ models:
         - id: large-prompt
           target_model: qwen/qwen3.6-35b-a3b
           min_prompt_chars: 12000
+      preclassifier:
+        min_confidence: 0.8
+        targets:
+          - target_model: qwen/qwen3.6-35b-a3b
+            confidence: 0.95
+            keywords:
+              - architecture
+              - migration
+              - production
+              - root cause
+              - security
+              - terraform
       classifier:
         backend: lmstudio
         model: qwen3-coder-30b-a3b-instruct

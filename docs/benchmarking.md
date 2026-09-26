@@ -126,3 +126,15 @@ python3 tools/route_classifier_bench.py \
 
 The tool writes one JSON object per candidate/case to stdout and prints per
 candidate accuracy/timing summaries to stderr.
+
+Router selection order is:
+
+1. explicit routing rules, such as prompt-size and output-token guardrails
+2. optional keyword preclassifier for high-confidence cheap decisions
+3. optional OpenAI-compatible LLM classifier for ambiguous requests
+4. the model alias default target
+
+Use the benchmark corpus to tune the preclassifier keyword list before enabling
+it in deployed config. Negated phrases such as `no production` and
+`without security impact` should remain fall-through cases so they can reach the
+LLM classifier or default route.

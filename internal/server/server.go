@@ -922,6 +922,14 @@ func (s *Server) selectTargetModel(ctx context.Context, body []byte, model confi
 		}
 	}
 
+	if model.Routing.Preclassifier.Enabled() {
+		target, ok := preclassifyTargetModel(model.Routing.Preclassifier, features)
+		if ok {
+			slog.Info("routing preclassifier selected target", "request_id", requestID, "alias", model.ID, "target_model", target)
+			return target, "preclassifier"
+		}
+	}
+
 	if model.Routing.Classifier.Enabled() {
 		target, ok := s.classifyTargetModel(ctx, model, features, requestID)
 		if ok {
@@ -930,6 +938,63 @@ func (s *Server) selectTargetModel(ctx context.Context, body []byte, model confi
 	}
 
 	return model.TargetModel, "default"
+}
+
+func preclassifyTargetModel(preclassifier config.RoutingPreclassifierConfig, features routingFeatures) (string, bool) {
+	minConfidence := preclassifier.MinConfidence
+	if minConfidence == 0 {
+		minConfidence = 0.75
+	}
+
+	bestTarget := ""
+	bestConfidence := 0.0
+	for _, target := range preclassifier.Targets {
+		if !preclassifierTargetMatches(target, features, preclassifier.NegationPhrases) {
+			continue
+		}
+		if target.Confidence > bestConfidence {
+			bestTarget = target.TargetModel
+			bestConfidence = target.Confidence
+		}
+	}
+	if bestTarget == "" || bestConfidence < minConfidence {
+		return "", false
+	}
+	return bestTarget, true
+}
+
+func preclassifierTargetMatches(target config.RoutingPreclassifierTargetConfig, features routingFeatures, negationPhrases []string) bool {
+	for _, keyword := range target.Keywords {
+		normalized := strings.ToLower(strings.TrimSpace(keyword))
+		if normalized == "" || !strings.Contains(features.Text, normalized) {
+			continue
+		}
+		if preclassifierKeywordNegated(features.Text, normalized, negationPhrases) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func preclassifierKeywordNegated(text string, keyword string, configuredPhrases []string) bool {
+	phrases := configuredPhrases
+	if len(phrases) == 0 {
+		phrases = []string{"no ", "not ", "without ", "non-"}
+	}
+	for _, phrase := range phrases {
+		normalized := strings.ToLower(strings.TrimSpace(phrase))
+		if normalized == "" {
+			continue
+		}
+		if strings.Contains(text, normalized+keyword) {
+			return true
+		}
+		if !strings.HasSuffix(normalized, "-") && strings.Contains(text, normalized+" "+keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) classifyTargetModel(ctx context.Context, model config.ModelConfig, features routingFeatures, requestID string) (string, bool) {

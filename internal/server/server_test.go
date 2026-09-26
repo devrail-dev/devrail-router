@@ -369,6 +369,143 @@ func TestRoutingClassifierFallsBackToDefaultTarget(t *testing.T) {
 	}
 }
 
+func TestRoutingPreclassifierSelectsTargetBeforeClassifier(t *testing.T) {
+	t.Parallel()
+
+	var classifierCalls int
+	classifier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		classifierCalls++
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": `{"target_model":"fast-model"}`,
+				},
+			}},
+		})
+	}))
+	t.Cleanup(classifier.Close)
+
+	var backendModel string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode backend request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		backendModel = payload.Model
+		writeJSON(w, http.StatusOK, map[string]string{"model": payload.Model})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv, err := New(config.Config{
+		Server: config.ServerConfig{Address: "127.0.0.1:0"},
+		Models: []config.ModelConfig{{
+			ID:          "local-coder-auto",
+			Backend:     "lmstudio",
+			TargetModel: "fast-model",
+			Routing: config.RoutingConfig{
+				Preclassifier: config.RoutingPreclassifierConfig{
+					MinConfidence: 0.8,
+					Targets: []config.RoutingPreclassifierTargetConfig{{
+						TargetModel: "deep-model",
+						Keywords:    []string{"production", "incident"},
+						Confidence:  0.95,
+					}},
+				},
+				Classifier: config.RoutingClassifierConfig{
+					Backend:      "classifier",
+					Model:        "classifier-model",
+					TargetModels: []string{"fast-model", "deep-model"},
+				},
+			},
+		}},
+		Backends: []config.BackendConfig{
+			{ID: "lmstudio", BaseURL: backend.URL},
+			{ID: "classifier", BaseURL: classifier.URL},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder-auto","messages":[{"role":"user","content":"Investigate a production incident."}]}`),
+	)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	if classifierCalls != 0 {
+		t.Fatalf("expected preclassifier to bypass classifier, got %d classifier calls", classifierCalls)
+	}
+	if backendModel != "deep-model" {
+		t.Fatalf("unexpected backend model: %q", backendModel)
+	}
+}
+
+func TestRoutingPreclassifierFallsThroughForNegatedKeyword(t *testing.T) {
+	t.Parallel()
+
+	features := routingFeatures{Text: "update frontend copy. no production services are involved."}
+	target, ok := preclassifyTargetModel(config.RoutingPreclassifierConfig{
+		MinConfidence: 0.8,
+		Targets: []config.RoutingPreclassifierTargetConfig{{
+			TargetModel: "deep-model",
+			Keywords:    []string{"production"},
+			Confidence:  0.95,
+		}},
+	}, features)
+
+	if ok {
+		t.Fatalf("expected negated keyword to fall through, got target %q", target)
+	}
+}
+
+func TestRoutingPreclassifierFallsThroughForCustomNegationPhrase(t *testing.T) {
+	t.Parallel()
+
+	features := routingFeatures{Text: "quick docs update without security impact."}
+	target, ok := preclassifyTargetModel(config.RoutingPreclassifierConfig{
+		MinConfidence:   0.8,
+		NegationPhrases: []string{"without"},
+		Targets: []config.RoutingPreclassifierTargetConfig{{
+			TargetModel: "deep-model",
+			Keywords:    []string{"security"},
+			Confidence:  0.95,
+		}},
+	}, features)
+
+	if ok {
+		t.Fatalf("expected custom-negated keyword to fall through, got target %q", target)
+	}
+}
+
+func TestRoutingPreclassifierFallsThroughBelowConfidence(t *testing.T) {
+	t.Parallel()
+
+	features := routingFeatures{Text: "review a terraform plan"}
+	target, ok := preclassifyTargetModel(config.RoutingPreclassifierConfig{
+		MinConfidence: 0.9,
+		Targets: []config.RoutingPreclassifierTargetConfig{{
+			TargetModel: "deep-model",
+			Keywords:    []string{"terraform"},
+			Confidence:  0.7,
+		}},
+	}, features)
+
+	if ok {
+		t.Fatalf("expected low-confidence keyword to fall through, got target %q", target)
+	}
+}
+
 func TestRewriteModelClampsOversizedTargetAliasOutput(t *testing.T) {
 	t.Parallel()
 
