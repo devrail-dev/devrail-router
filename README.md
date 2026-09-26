@@ -31,7 +31,7 @@ This repository is in early foundation work. The current service supports:
 - response telemetry for proxied backend calls
 - streaming response telemetry for first event latency and streamed usage data
 - Prometheus-compatible metrics for requests, queue wait, response latency,
-  first event latency, bytes, and token totals
+  first event latency, prompt size, bytes, and token totals
 - consistent OpenAI-shaped errors for router-side failures
 - request IDs in router responses and logs
 - a streamed benchmark harness for comparing model aliases with fixed prompts

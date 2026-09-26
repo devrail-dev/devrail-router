@@ -127,18 +127,23 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	model, ok := s.cfg.Model(modelID)
 	if !ok {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("unknown model alias %q", modelID), "invalid_request_error", "unknown_model_alias")
-		s.metrics.record(requestMetrics{Alias: modelID, Status: http.StatusBadRequest, Started: time.Now()})
+		metrics := requestMetrics{Alias: modelID, Status: http.StatusBadRequest, Started: time.Now()}
+		metrics.applyRoutingFeatures(extractRoutingFeatures(body))
+		s.metrics.record(metrics)
 		return
 	}
 
+	features := extractRoutingFeatures(body)
 	backend, ok := s.cfg.Backend(model.Backend)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, fmt.Sprintf("unknown backend %q", model.Backend), "devrail_config_error", "unknown_backend")
-		s.metrics.record(requestMetricsFromModel(model, config.BackendConfig{}, http.StatusInternalServerError, time.Now()))
+		metrics := requestMetricsFromModel(model, config.BackendConfig{}, http.StatusInternalServerError, time.Now())
+		metrics.applyRoutingFeatures(features)
+		s.metrics.record(metrics)
 		return
 	}
 
-	waited, release, ok := s.acquireModelSlot(w, r, model, backend, requestID)
+	waited, release, ok := s.acquireModelSlot(w, r, model, backend, requestID, features)
 	if !ok {
 		return
 	}
@@ -147,11 +152,13 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.ensureModelReady(w, r, model, requestID) {
-		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusServiceUnavailable, time.Now()))
+		metrics := requestMetricsFromModel(model, backend, http.StatusServiceUnavailable, time.Now())
+		metrics.applyRoutingFeatures(features)
+		s.metrics.record(metrics)
 		return
 	}
 
-	targetModel, routeRule := s.selectTargetModel(r.Context(), body, model, requestID)
+	targetModel, routeRule := s.selectTargetModel(r.Context(), features, model, requestID)
 	targetMaxOutputTokens := 0
 	if targetAlias, ok := s.cfg.Model(targetModel); ok {
 		targetMaxOutputTokens = targetAlias.MaxOutputTokens
@@ -159,7 +166,9 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	body, err = rewriteModel(body, targetModel, targetMaxOutputTokens)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "invalid_request")
-		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusBadRequest, time.Now()))
+		metrics := requestMetricsFromModel(model, backend, http.StatusBadRequest, time.Now())
+		metrics.applyRoutingFeatures(features)
+		s.metrics.record(metrics)
 		return
 	}
 	routedModel := model
@@ -172,7 +181,9 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	target, err := url.Parse(backend.BaseURL)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "backend base_url is invalid", "devrail_config_error", "invalid_backend_base_url")
-		s.metrics.record(requestMetricsFromModel(model, backend, http.StatusInternalServerError, time.Now()))
+		metrics := requestMetricsFromModel(model, backend, http.StatusInternalServerError, time.Now())
+		metrics.applyRoutingFeatures(features)
+		s.metrics.record(metrics)
 		return
 	}
 
@@ -186,7 +197,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		setBackendAuth(req, backend)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		instrumentBackendResponse(resp, started, waited, routedModel, backend, requestID, routeRule, s.metrics)
+		instrumentBackendResponse(resp, started, waited, routedModel, backend, requestID, routeRule, features, s.metrics)
 		return nil
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -204,6 +215,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		)
 		metrics := requestMetricsFromModel(routedModel, backend, http.StatusBadGateway, started)
 		metrics.RouteRule = routeRule
+		metrics.applyRoutingFeatures(features)
 		s.metrics.record(metrics)
 		writeOpenAIError(rw, http.StatusBadGateway, "backend request failed", "devrail_backend_error", "backend_request_failed")
 	}
@@ -212,7 +224,7 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig, backend config.BackendConfig, requestID string) (time.Duration, func(), bool) {
+func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig, backend config.BackendConfig, requestID string, features routingFeatures) (time.Duration, func(), bool) {
 	limiter, ok := s.limiters[model.ID]
 	if !ok {
 		return 0, nil, true
@@ -255,6 +267,7 @@ func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model 
 	)
 	metrics := requestMetricsFromModel(model, backend, status, time.Now())
 	metrics.QueueWait = waited
+	metrics.applyRoutingFeatures(features)
 	s.metrics.record(metrics)
 	return waited, nil, false
 }
@@ -352,6 +365,8 @@ type responseTelemetry struct {
 	TotalTokens      int
 	Bytes            int64
 	QueueWait        time.Duration
+	PromptChars      int
+	HasPromptChars   bool
 	Started          time.Time
 	metrics          *metricsRegistry
 }
@@ -472,6 +487,8 @@ func logTelemetry(telemetry *responseTelemetry) {
 		TotalTokens:      telemetry.TotalTokens,
 		Bytes:            telemetry.Bytes,
 		QueueWait:        telemetry.QueueWait,
+		PromptChars:      telemetry.PromptChars,
+		HasPromptChars:   telemetry.HasPromptChars,
 		Started:          telemetry.Started,
 	})
 	slog.Info(
@@ -489,6 +506,7 @@ func logTelemetry(telemetry *responseTelemetry) {
 		"prompt_tokens", telemetry.PromptTokens,
 		"completion_tokens", telemetry.CompletionTokens,
 		"total_tokens", telemetry.TotalTokens,
+		"prompt_chars", telemetry.PromptChars,
 	)
 }
 
@@ -500,25 +518,29 @@ func instrumentBackendResponse(
 	backend config.BackendConfig,
 	requestID string,
 	routeRule string,
+	features routingFeatures,
 	metrics *metricsRegistry,
 ) {
 	if resp.Body == nil {
 		requestMetrics := requestMetricsFromModel(model, backend, resp.StatusCode, started)
 		requestMetrics.RouteRule = routeRule
+		requestMetrics.applyRoutingFeatures(features)
 		metrics.record(requestMetrics)
 		return
 	}
 
 	telemetry := &responseTelemetry{
-		RequestID:   requestID,
-		Alias:       model.ID,
-		TargetModel: model.TargetModel,
-		Backend:     backend.ID,
-		RouteRule:   routeRule,
-		Status:      resp.StatusCode,
-		Started:     started,
-		QueueWait:   queueWait,
-		metrics:     metrics,
+		RequestID:      requestID,
+		Alias:          model.ID,
+		TargetModel:    model.TargetModel,
+		Backend:        backend.ID,
+		RouteRule:      routeRule,
+		Status:         resp.StatusCode,
+		Started:        started,
+		QueueWait:      queueWait,
+		PromptChars:    features.PromptChars,
+		HasPromptChars: features.Valid,
+		metrics:        metrics,
 	}
 
 	if isEventStreamResponse(resp) {
@@ -591,6 +613,8 @@ type requestMetrics struct {
 	TotalTokens      int
 	Bytes            int64
 	QueueWait        time.Duration
+	PromptChars      int
+	HasPromptChars   bool
 	Started          time.Time
 }
 
@@ -601,6 +625,7 @@ type metricsRegistry struct {
 	queueWaitSeconds  histogram
 	ensureSeconds     histogram
 	firstEventSeconds histogram
+	promptChars       histogram
 	responseBytes     float64
 	promptTokens      float64
 	completionTokens  float64
@@ -637,6 +662,7 @@ type histogramSeries struct {
 
 func newMetricsRegistry() *metricsRegistry {
 	latencyBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}
+	promptCharBuckets := []float64{1024, 4096, 8192, 16384, 32768, 65536, 80000, 131072, 262144, 524288, 1048576}
 	return &metricsRegistry{
 		requests: make(map[string]*metricSeries),
 		durationSeconds: histogram{
@@ -655,6 +681,10 @@ func newMetricsRegistry() *metricsRegistry {
 			Buckets: latencyBuckets,
 			Series:  make(map[string]*histogramSeries),
 		},
+		promptChars: histogram{
+			Buckets: promptCharBuckets,
+			Series:  make(map[string]*histogramSeries),
+		},
 	}
 }
 
@@ -666,6 +696,14 @@ func requestMetricsFromModel(model config.ModelConfig, backend config.BackendCon
 		Status:      status,
 		Started:     started,
 	}
+}
+
+func (metrics *requestMetrics) applyRoutingFeatures(features routingFeatures) {
+	if !features.Valid {
+		return
+	}
+	metrics.PromptChars = features.PromptChars
+	metrics.HasPromptChars = true
 }
 
 func (registry *metricsRegistry) record(metrics requestMetrics) {
@@ -696,6 +734,9 @@ func (registry *metricsRegistry) record(metrics requestMetrics) {
 	registry.requests[key].Value++
 	registry.durationSeconds.observe(labels, duration)
 	registry.queueWaitSeconds.observe(labels, metrics.QueueWait.Seconds())
+	if metrics.HasPromptChars {
+		registry.promptChars.observe(labels, float64(metrics.PromptChars))
+	}
 	if !metrics.FirstEvent.IsZero() {
 		registry.firstEventSeconds.observe(labels, metrics.FirstEvent.Sub(metrics.Started).Seconds())
 	}
@@ -756,6 +797,7 @@ func (registry *metricsRegistry) render() string {
 	writeHistogram(&builder, "devrail_router_queue_wait_seconds", "Time spent waiting for a model concurrency slot in seconds.", registry.queueWaitSeconds)
 	writeHistogram(&builder, "devrail_router_ensure_duration_seconds", "Time spent ensuring a model profile is ready before proxying.", registry.ensureSeconds)
 	writeHistogram(&builder, "devrail_router_first_event_latency_seconds", "Time to first Server-Sent Event for streamed upstream responses in seconds.", registry.firstEventSeconds)
+	writeHistogram(&builder, "devrail_router_prompt_chars", "Extracted request prompt size in characters.", registry.promptChars)
 
 	writeMetricHelp(&builder, "devrail_router_response_bytes_total", "Total response body bytes proxied from upstream backends.")
 	writeMetricType(&builder, "devrail_router_response_bytes_total", "counter")
@@ -923,10 +965,10 @@ type routingFeatures struct {
 	PromptChars       int
 	Text              string
 	RequestedMaxToken int
+	Valid             bool
 }
 
-func (s *Server) selectTargetModel(ctx context.Context, body []byte, model config.ModelConfig, requestID string) (string, string) {
-	features := extractRoutingFeatures(body)
+func (s *Server) selectTargetModel(ctx context.Context, features routingFeatures, model config.ModelConfig, requestID string) (string, string) {
 	for _, rule := range model.Routing.Rules {
 		if routingRuleMatches(rule, features) {
 			if rule.ID != "" {
@@ -1095,6 +1137,7 @@ func extractRoutingFeatures(body []byte) routingFeatures {
 		PromptChars:       len(text),
 		Text:              strings.ToLower(text),
 		RequestedMaxToken: requestMaxTokens(payload),
+		Valid:             true,
 	}
 }
 
