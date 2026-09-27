@@ -30,6 +30,7 @@ type ModelConfig struct {
 	TargetModel           string `yaml:"target_model"`
 	ContextWindow         int    `yaml:"context_window"`
 	MaxOutputTokens       int    `yaml:"max_output_tokens"`
+	MaxPromptChars        int    `yaml:"max_prompt_chars"`
 	ToolCalls             bool   `yaml:"tool_calls"`
 	MaxConcurrentRequests int    `yaml:"max_concurrent_requests"`
 	MaxQueueSize          int    `yaml:"max_queue_size"`
@@ -181,6 +182,9 @@ func (cfg Config) Validate() error {
 		}
 		if model.MaxConcurrentRequests < 0 {
 			return fmt.Errorf("model %q max_concurrent_requests must be non-negative", model.ID)
+		}
+		if model.MaxPromptChars < 0 {
+			return fmt.Errorf("model %q max_prompt_chars must be non-negative", model.ID)
 		}
 		if model.MaxQueueSize < 0 {
 			return fmt.Errorf("model %q max_queue_size must be non-negative", model.ID)

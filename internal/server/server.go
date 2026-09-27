@@ -89,6 +89,7 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		Name          string `json:"name,omitempty"`
 		ContextWindow int    `json:"context_window,omitempty"`
 		MaxOutput     int    `json:"max_output_tokens,omitempty"`
+		MaxPrompt     int    `json:"max_prompt_chars,omitempty"`
 		ToolCall      bool   `json:"tool_call,omitempty"`
 		TargetModel   string `json:"target_model,omitempty"`
 	}
@@ -102,6 +103,7 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 			Name:          model.Name,
 			ContextWindow: model.ContextWindow,
 			MaxOutput:     model.MaxOutputTokens,
+			MaxPrompt:     model.MaxPromptChars,
 			ToolCall:      model.ToolCalls,
 			TargetModel:   model.TargetModel,
 		})
@@ -134,6 +136,21 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	features := extractRoutingFeatures(body)
+	if rejectOversizedPrompt(w, model, features) {
+		metrics := requestMetricsFromModel(model, config.BackendConfig{}, http.StatusBadRequest, time.Now())
+		metrics.RouteRule = "prompt-limit"
+		metrics.applyRoutingFeatures(features)
+		s.metrics.record(metrics)
+		slog.Warn(
+			"rejected oversized prompt",
+			"request_id", requestID,
+			"alias", model.ID,
+			"prompt_chars", features.PromptChars,
+			"max_prompt_chars", model.MaxPromptChars,
+		)
+		return
+	}
+
 	backend, ok := s.cfg.Backend(model.Backend)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, fmt.Sprintf("unknown backend %q", model.Backend), "devrail_config_error", "unknown_backend")
@@ -222,6 +239,24 @@ func (s *Server) proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("routing request", "request_id", requestID, "alias", model.ID, "target_model", targetModel, "route_rule", routeRule, "backend", backend.ID)
 	proxy.ServeHTTP(w, r)
+}
+
+func rejectOversizedPrompt(w http.ResponseWriter, model config.ModelConfig, features routingFeatures) bool {
+	if model.MaxPromptChars <= 0 || !features.Valid || features.PromptChars <= model.MaxPromptChars {
+		return false
+	}
+
+	w.Header().Set("X-Devrail-Prompt-Chars", fmt.Sprintf("%d", features.PromptChars))
+	w.Header().Set("X-Devrail-Max-Prompt-Chars", fmt.Sprintf("%d", model.MaxPromptChars))
+	w.Header().Set("X-Devrail-Action", "compact_context")
+	writeOpenAIError(
+		w,
+		http.StatusBadRequest,
+		fmt.Sprintf("context length exceeded: prompt has %d characters, limit is %d for model alias %q; compact or trim context and retry", features.PromptChars, model.MaxPromptChars, model.ID),
+		"invalid_request_error",
+		"context_length_exceeded",
+	)
+	return true
 }
 
 func (s *Server) acquireModelSlot(w http.ResponseWriter, r *http.Request, model config.ModelConfig, backend config.BackendConfig, requestID string, features routingFeatures) (time.Duration, func(), bool) {
