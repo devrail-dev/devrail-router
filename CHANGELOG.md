@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels so prompt-size guardrail behavior can be tuned from real traffic.
 - `/metrics` now exposes `devrail_router_inflight_requests` so open streams
   can be distinguished from completed or stalled client-side requests.
+- Model aliases can define `max_prompt_chars` to reject oversized prompts before
+  queueing, readiness hooks, or backend proxying. Rejections return an
+  OpenAI-shaped `context_length_exceeded` error with compact-context headers.
 - Opt-in command-backed model profile ensure hooks.
 - Roadmap for maturing DevRail Router from a single-backend gateway into an
   observable local inference control plane.

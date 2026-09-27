@@ -70,6 +70,52 @@ func TestValidateQueueSettings(t *testing.T) {
 	}
 }
 
+func TestValidateMaxPromptChars(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:             "local-coder",
+			Backend:        "lmstudio",
+			TargetModel:    "qwen/qwen3.6-35b-a3b",
+			MaxPromptChars: 120000,
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+}
+
+func TestValidateRejectsNegativeMaxPromptChars(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Models: []ModelConfig{{
+			ID:             "local-coder",
+			Backend:        "lmstudio",
+			TargetModel:    "qwen/qwen3.6-35b-a3b",
+			MaxPromptChars: -1,
+		}},
+		Backends: []BackendConfig{{
+			ID:      "lmstudio",
+			BaseURL: "http://127.0.0.1:1234/v1",
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "max_prompt_chars") {
+		t.Fatalf("expected max_prompt_chars error, got: %v", err)
+	}
+}
+
 func TestValidateRoutingRules(t *testing.T) {
 	t.Parallel()
 

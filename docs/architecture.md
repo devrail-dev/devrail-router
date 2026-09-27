@@ -79,6 +79,24 @@ models:
     queue_timeout: 2m
 ```
 
+Aliases can also define `max_prompt_chars` to reject oversized requests before
+queue acquisition, readiness hooks, or backend proxying:
+
+```yaml
+models:
+  - id: local-coder
+    backend: lmstudio
+    target_model: qwen/qwen3.6-35b-a3b
+    max_prompt_chars: 200000
+```
+
+Oversized prompt rejections return an OpenAI-shaped `400` response with
+`error.code` set to `context_length_exceeded`. The response includes
+`X-Devrail-Action: compact_context`, `X-Devrail-Prompt-Chars`, and
+`X-Devrail-Max-Prompt-Chars` headers so coding-agent clients can compact or
+trim context before retrying. Request metrics record these rejections with
+`route_rule="prompt-limit"` and `status="400"`.
+
 When `max_concurrent_requests` is unset or `0`, the alias is unlimited. When it
 is set, DevRail Router holds one slot for each proxied request until the
 upstream response is fully complete. That matters for streaming chat responses:

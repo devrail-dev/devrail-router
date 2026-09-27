@@ -180,6 +180,55 @@ func TestRoutingRuleSelectsTargetByPromptSize(t *testing.T) {
 	}
 }
 
+func TestMaxPromptCharsRejectsBeforeBackend(t *testing.T) {
+	t.Parallel()
+
+	var backendHit atomic.Bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendHit.Store(true)
+		writeJSON(w, http.StatusOK, map[string]string{"model": "target-model"})
+	}))
+	t.Cleanup(backend.Close)
+
+	srv := testServerWithBackend(t, backend.URL, config.ModelConfig{
+		ID:             "local-coder",
+		Backend:        "lmstudio",
+		TargetModel:    "target-model",
+		MaxPromptChars: 16,
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"local-coder","messages":[{"role":"user","content":"please analyze this oversized prompt"}]}`),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+	assertOpenAIErrorCode(t, rec.Body.Bytes(), "context_length_exceeded")
+	if backendHit.Load() {
+		t.Fatal("backend should not receive oversized prompt")
+	}
+	if got := rec.Header().Get("X-Devrail-Action"); got != "compact_context" {
+		t.Fatalf("unexpected action header: %q", got)
+	}
+	if got := rec.Header().Get("X-Devrail-Max-Prompt-Chars"); got != "16" {
+		t.Fatalf("unexpected prompt limit header: %q", got)
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	srv.ServeHTTP(metricsRec, metricsReq)
+	body := metricsRec.Body.String()
+	want := `devrail_router_requests_total{alias="local-coder",target_model="target-model",route_rule="prompt-limit",status="400",streaming="false"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected metrics to contain %s, got:\n%s", want, body)
+	}
+}
+
 func TestRoutingRuleFallsBackToDefaultTarget(t *testing.T) {
 	t.Parallel()
 

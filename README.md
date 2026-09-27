@@ -128,6 +128,7 @@ models:
     target_model: qwen3-coder-30b-a3b-instruct
     context_window: 65536
     max_output_tokens: 4096
+    max_prompt_chars: 200000
     tool_calls: true
     max_concurrent_requests: 2
     max_queue_size: 4
