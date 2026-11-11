@@ -202,3 +202,10 @@ All DevRail checks run through `ghcr.io/devrail-dev/dev-toolchain:v1`.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Dependency updates
+
+Dependabot checks supported manifests and GitHub Actions weekly.
+See [`.github/dependabot.yml`](.github/dependabot.yml) for ecosystem coverage;
+add an entry when introducing a new package ecosystem or manifest directory.
+Dependency pull requests still require normal review and CI; auto-merge is not enabled.
