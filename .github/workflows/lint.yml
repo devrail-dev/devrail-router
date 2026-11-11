@@ -16,6 +16,6 @@ jobs:
     container:
       image: ghcr.io/devrail-dev/dev-toolchain:v1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run lint
         run: make _lint
